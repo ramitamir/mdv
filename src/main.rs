@@ -13,10 +13,6 @@ mod terminal;
 mod theme;
 mod viewport;
 
-// Kept on disk for reference but not compiled while ratatui rendering is replaced:
-// mod app;
-// mod render;
-
 #[derive(Parser)]
 #[command(
     name = "mdv",

@@ -234,7 +234,7 @@ pub fn run(mut blocks: Vec<Block>, raw_content: &str, filename: &str, theme: The
                 )?;
                 continue;
             } else if key.code == KeyCode::Char('?') {
-                show_help(&mut term)?;
+                show_help(&mut term, &theme)?;
                 term.delete_all_images()?;
                 transmitted.clear();
                 redraw(&mut term, &mut viewport, &blocks, &theme, &mut transmitted, scroll_row, cell_h, margin_cols)?;
@@ -507,7 +507,7 @@ fn redraw(
 
         if !transmitted.contains(&i) {
             let img = viewport.ensure_block_rendered(i, blocks, theme);
-            let rgba = img.to_rgba8();
+            let rgba = img.as_rgba8().expect("image is rgba8");
             let image_id = (i + 1) as u32;
             term.transmit_virtual(image_id, rgba.as_raw(), img.width(), img.height())?;
             transmitted.insert(i);
@@ -733,7 +733,7 @@ fn ensure_blocks_for_range(
 
         if !transmitted.contains(&i) {
             let img = viewport.ensure_block_rendered(i, blocks, theme);
-            let rgba = img.to_rgba8();
+            let rgba = img.as_rgba8().expect("image is rgba8");
             let image_id = (i + 1) as u32;
             term.transmit_virtual(image_id, rgba.as_raw(), img.width(), img.height())?;
             transmitted.insert(i);
@@ -851,7 +851,7 @@ fn draw_status_image(
 ) -> Result<()> {
     let height = (term.cell_height as f32 * 1.4) as u32; // taller than one cell
     let img = viewport.render_status_bar(left, right, fill_bg, height);
-    let rgba = img.to_rgba8();
+    let rgba = img.as_rgba8().expect("image is rgba8");
     // Delete previous status bar image
     let _ = term.delete_image(STATUS_IMAGE_ID);
     term.transmit_virtual(STATUS_IMAGE_ID, rgba.as_raw(), img.width(), img.height())?;
@@ -982,14 +982,19 @@ fn draw_status_search(
 
 // ── Help overlay ─────────────────────────────────────────────────────────────
 
-fn show_help(term: &mut Terminal) -> Result<()> {
-    use crossterm::style::{SetBackgroundColor, SetForegroundColor, ResetColor, Color};
+fn theme_to_ct(c: ratatui::style::Color) -> crossterm::style::Color {
+    let [r, g, b] = crate::theme::color_to_rgb(c);
+    crossterm::style::Color::Rgb { r, g, b }
+}
 
-    let bg = Color::Rgb { r: 30, g: 30, b: 40 };
-    let fg = Color::Rgb { r: 200, g: 200, b: 210 };
-    let key_fg = Color::Rgb { r: 130, g: 180, b: 255 };
-    let heading_fg = Color::Rgb { r: 255, g: 200, b: 100 };
-    let dim_fg = Color::Rgb { r: 120, g: 120, b: 140 };
+fn show_help(term: &mut Terminal, theme: &Theme) -> Result<()> {
+    use crossterm::style::{SetBackgroundColor, SetForegroundColor, ResetColor};
+
+    let bg = theme_to_ct(theme.help_bg);
+    let fg = theme_to_ct(theme.help_fg);
+    let key_fg = theme_to_ct(theme.link);
+    let heading_fg = theme_to_ct(theme.inline_code);
+    let dim_fg = theme_to_ct(theme.status_dim_fg);
 
     let config_path = "~/.config/mdv/config.toml";
 
@@ -1115,7 +1120,7 @@ fn source_mode(
     start_line: usize,
     start_selecting: bool,
 ) -> Result<()> {
-    use crossterm::style::{Color, SetBackgroundColor, SetForegroundColor, ResetColor};
+    use crossterm::style::{SetBackgroundColor, SetForegroundColor, ResetColor};
 
     let lines: Vec<&str> = content.lines().collect();
     let total_lines = lines.len();
@@ -1128,10 +1133,10 @@ fn source_mode(
     let mut anch_c: usize = 0;
     let mut copied_msg: Option<String> = None;
 
-    let sel_bg = Color::Rgb { r: 80, g: 130, b: 220 };
-    let text_fg = Color::Rgb { r: 200, g: 200, b: 210 };
-    let cursor_bg = Color::Rgb { r: 200, g: 200, b: 200 };
-    let cursor_fg = Color::Rgb { r: 0, g: 0, b: 0 };
+    let sel_bg = theme_to_ct(theme.selection);
+    let text_fg = theme_to_ct(theme.help_fg);
+    let cursor_bg = theme_to_ct(theme.cursor);
+    let cursor_fg = theme_to_ct(theme.cursor_fg);
     let src_bg = crate::theme::color_to_rgb(theme.status_bar_source);
 
     loop {

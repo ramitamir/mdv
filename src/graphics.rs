@@ -4,6 +4,16 @@ use cosmic_text::{
 use image::{DynamicImage, ImageBuffer, Rgba};
 use std::path::Path;
 
+/// Alpha-blend a source pixel onto a destination pixel in-place.
+#[inline]
+pub fn blend_pixel(dst: &mut [u8], src: &[u8], alpha: u32) {
+    let inv = 255 - alpha;
+    dst[0] = ((dst[0] as u32 * inv + src[0] as u32 * alpha) / 255) as u8;
+    dst[1] = ((dst[1] as u32 * inv + src[1] as u32 * alpha) / 255) as u8;
+    dst[2] = ((dst[2] as u32 * inv + src[2] as u32 * alpha) / 255) as u8;
+    dst[3] = 255;
+}
+
 pub struct TextRenderer {
     font_system: FontSystem,
     swash_cache: SwashCache,
@@ -164,16 +174,21 @@ impl TextRenderer {
             }
         }
 
-        // Draw search highlights before text (so text renders on top)
-        if !opts.highlights.is_empty() {
+        // Precompute line byte offsets for highlight/link glyph matching
+        let line_byte_offsets: Vec<usize> = if !opts.highlights.is_empty() || !opts.underlines.is_empty() {
             let full_text: String = spans.iter().map(|s| s.text.as_str()).collect();
-            let mut line_byte_offsets: Vec<usize> = Vec::new();
+            let mut offsets = Vec::new();
             let mut off = 0usize;
             for line in full_text.split('\n') {
-                line_byte_offsets.push(off);
+                offsets.push(off);
                 off += line.len() + 1;
             }
+            offsets
+        } else {
+            Vec::new()
+        };
 
+        if !opts.highlights.is_empty() {
             let pad_px = 2u32;
 
             for run in buffer.layout_runs() {
@@ -200,15 +215,12 @@ impl TextRenderer {
                     let y1 = ((hl_y + line_height) as u32).min(height_px);
 
                     let a = hl.alpha as u32;
-                    let inv = 255 - a;
+                    let src = [hl.color[0], hl.color[1], hl.color[2], 255];
                     for py in y0..y1 {
                         for px in x0..x1 {
                             let idx = ((py * width_px + px) * 4) as usize;
                             if idx + 3 < pixels.len() {
-                                pixels[idx] = ((pixels[idx] as u32 * inv + hl.color[0] as u32 * a) / 255) as u8;
-                                pixels[idx + 1] = ((pixels[idx + 1] as u32 * inv + hl.color[1] as u32 * a) / 255) as u8;
-                                pixels[idx + 2] = ((pixels[idx + 2] as u32 * inv + hl.color[2] as u32 * a) / 255) as u8;
-                                pixels[idx + 3] = (pixels[idx + 3] as u32 + a).min(255) as u8;
+                                blend_pixel(&mut pixels[idx..idx+4], &src, a);
                             }
                         }
                     }
@@ -235,21 +247,7 @@ impl TextRenderer {
                             let idx = ((py as u32 * width_px + px as u32) * 4) as usize;
                             if idx + 3 < pixels.len() {
                                 let alpha = c.a() as u32;
-                                let inv_alpha = 255 - alpha;
-                                pixels[idx] = ((pixels[idx] as u32 * inv_alpha
-                                    + c.r() as u32 * alpha)
-                                    / 255)
-                                    as u8;
-                                pixels[idx + 1] = ((pixels[idx + 1] as u32 * inv_alpha
-                                    + c.g() as u32 * alpha)
-                                    / 255)
-                                    as u8;
-                                pixels[idx + 2] = ((pixels[idx + 2] as u32 * inv_alpha
-                                    + c.b() as u32 * alpha)
-                                    / 255)
-                                    as u8;
-                                pixels[idx + 3] =
-                                    (pixels[idx + 3] as u32 + alpha).min(255) as u8;
+                                blend_pixel(&mut pixels[idx..idx+4], &[c.r(), c.g(), c.b(), 255], alpha);
                             }
                         }
                     }
@@ -260,14 +258,6 @@ impl TextRenderer {
         // Collect link bounding boxes (no underline drawing)
         self.last_link_boxes.clear();
         if !opts.underlines.is_empty() {
-            let full_text: String = spans.iter().map(|s| s.text.as_str()).collect();
-            let mut line_byte_offsets: Vec<usize> = Vec::new();
-            let mut off = 0usize;
-            for line in full_text.split('\n') {
-                line_byte_offsets.push(off);
-                off += line.len() + 1;
-            }
-
             for run in buffer.layout_runs() {
                 let line_base = line_byte_offsets.get(run.line_i).copied().unwrap_or(0);
                 for ul in &opts.underlines {
@@ -399,7 +389,7 @@ impl TextRenderer {
                     ..Default::default()
                 };
                 let result = self.render_styled_text(&spans, width_px, &opts);
-                let text_rgba = result.image.to_rgba8();
+                let text_rgba = result.image.as_rgba8().expect("image is rgba8");
                 let text_data = text_rgba.as_raw();
                 let tw = text_rgba.width();
                 let th = text_rgba.height();
@@ -416,11 +406,7 @@ impl TextRenderer {
                         if src_idx + 3 < text_data.len() && dst_idx + 3 < pixels.len() {
                             let alpha = text_data[src_idx + 3] as u32;
                             if alpha > 0 {
-                                let inv = 255 - alpha;
-                                pixels[dst_idx] = ((pixels[dst_idx] as u32 * inv + text_data[src_idx] as u32 * alpha) / 255) as u8;
-                                pixels[dst_idx+1] = ((pixels[dst_idx+1] as u32 * inv + text_data[src_idx+1] as u32 * alpha) / 255) as u8;
-                                pixels[dst_idx+2] = ((pixels[dst_idx+2] as u32 * inv + text_data[src_idx+2] as u32 * alpha) / 255) as u8;
-                                pixels[dst_idx+3] = 255;
+                                blend_pixel(&mut pixels[dst_idx..dst_idx+4], &text_data[src_idx..src_idx+4], alpha);
                             }
                         }
                     }
@@ -547,7 +533,7 @@ impl TextRenderer {
         }
 
         // Composite code text
-        let code_rgba = code_img.to_rgba8();
+        let code_rgba = code_img.as_rgba8().expect("image is rgba8");
         let code_data = code_rgba.as_raw();
         for cy in 0..code_h {
             for cx in 0..code_img.width().min(inner_width) {
@@ -558,11 +544,7 @@ impl TextRenderer {
                 if src_idx + 3 < code_data.len() && dst_idx + 3 < pixels.len() {
                     let alpha = code_data[src_idx + 3] as u32;
                     if alpha > 0 {
-                        let inv = 255 - alpha;
-                        pixels[dst_idx] = ((pixels[dst_idx] as u32 * inv + code_data[src_idx] as u32 * alpha) / 255) as u8;
-                        pixels[dst_idx + 1] = ((pixels[dst_idx + 1] as u32 * inv + code_data[src_idx + 1] as u32 * alpha) / 255) as u8;
-                        pixels[dst_idx + 2] = ((pixels[dst_idx + 2] as u32 * inv + code_data[src_idx + 2] as u32 * alpha) / 255) as u8;
-                        pixels[dst_idx + 3] = 255;
+                        blend_pixel(&mut pixels[dst_idx..dst_idx+4], &code_data[src_idx..src_idx+4], alpha);
                     }
                 }
             }

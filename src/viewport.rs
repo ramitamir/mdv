@@ -448,7 +448,7 @@ impl Viewport {
                 let mut y_off = pad_v;
                 for (_ci, child_img) in child_images.iter().enumerate() {
                     let ch = child_img.height();
-                    let child_rgba = child_img.to_rgba8();
+                    let child_rgba = child_img.as_rgba8().expect("image is rgba8");
                     let child_data = child_rgba.as_raw();
                     let cw = child_img.width();
                     for y in 0..ch {
@@ -461,11 +461,7 @@ impl Viewport {
                             if src_idx + 3 < child_data.len() && dst_idx + 3 < pixels.len() {
                                 let alpha = child_data[src_idx + 3] as u32;
                                 if alpha > 0 {
-                                    let inv = 255 - alpha;
-                                    pixels[dst_idx] = ((pixels[dst_idx] as u32 * inv + child_data[src_idx] as u32 * alpha) / 255) as u8;
-                                    pixels[dst_idx + 1] = ((pixels[dst_idx + 1] as u32 * inv + child_data[src_idx + 1] as u32 * alpha) / 255) as u8;
-                                    pixels[dst_idx + 2] = ((pixels[dst_idx + 2] as u32 * inv + child_data[src_idx + 2] as u32 * alpha) / 255) as u8;
-                                    pixels[dst_idx + 3] = 255;
+                                    graphics::blend_pixel(&mut pixels[dst_idx..dst_idx+4], &child_data[src_idx..src_idx+4], alpha);
                                 }
                             }
                         }
@@ -541,14 +537,14 @@ impl Viewport {
                     let item_h = text_img.height();
                     let mut pixels = vec![0u8; (width_px * item_h * 4) as usize];
 
-                    let text_rgba = text_img.to_rgba8();
+                    let text_rgba = text_img.as_rgba8().expect("image is rgba8");
                     let text_data = text_rgba.as_raw();
                     let copy_len = (width_px * item_h * 4) as usize;
                     if text_data.len() >= copy_len && pixels.len() >= copy_len {
                         pixels[..copy_len].copy_from_slice(&text_data[..copy_len]);
                     }
 
-                    let bullet_rgba = bullet_img.to_rgba8();
+                    let bullet_rgba = bullet_img.as_rgba8().expect("image is rgba8");
                     let bullet_data = bullet_rgba.as_raw();
                     for by in 0..bullet_img.height().min(item_h) {
                         for bx in 0..bullet_img.width().min(bullet_indent) {
@@ -557,11 +553,7 @@ impl Viewport {
                             if src_idx + 3 < bullet_data.len() && dst_idx + 3 < pixels.len() {
                                 let alpha = bullet_data[src_idx + 3] as u32;
                                 if alpha > 0 {
-                                    let inv = 255 - alpha;
-                                    pixels[dst_idx] = ((pixels[dst_idx] as u32 * inv + bullet_data[src_idx] as u32 * alpha) / 255) as u8;
-                                    pixels[dst_idx + 1] = ((pixels[dst_idx + 1] as u32 * inv + bullet_data[src_idx + 1] as u32 * alpha) / 255) as u8;
-                                    pixels[dst_idx + 2] = ((pixels[dst_idx + 2] as u32 * inv + bullet_data[src_idx + 2] as u32 * alpha) / 255) as u8;
-                                    pixels[dst_idx + 3] = (pixels[dst_idx + 3] as u32 + alpha).min(255) as u8;
+                                    graphics::blend_pixel(&mut pixels[dst_idx..dst_idx+4], &bullet_data[src_idx..src_idx+4], alpha);
                                 }
                             }
                         }
@@ -611,7 +603,7 @@ impl Viewport {
                         let ch = child_img.height();
                         let cw = child_img.width();
                         let mut child_pixels = vec![0u8; (width_px * ch * 4) as usize];
-                        let child_rgba = child_img.to_rgba8();
+                        let child_rgba = child_img.as_rgba8().expect("image is rgba8");
                         let child_data = child_rgba.as_raw();
                         for y in 0..ch {
                             let copy_w = cw.min(child_width);
@@ -640,7 +632,7 @@ impl Viewport {
                 let mut y_offset = 0u32;
                 for item_img in &item_images {
                     let ih = item_img.height();
-                    let item_rgba = item_img.to_rgba8();
+                    let item_rgba = item_img.as_rgba8().expect("image is rgba8");
                     let item_data = item_rgba.as_raw();
                     let row_bytes = (width_px * 4) as usize;
                     for row in 0..ih {

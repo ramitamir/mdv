@@ -181,7 +181,7 @@ impl Terminal {
     }
 
     pub fn cleanup(&mut self) -> Result<()> {
-        write!(self.stdout, "\x1b_Ga=d;\x1b\\")?;
+        self.delete_all_images()?;
         // Disable mouse button tracking
         self.stdout.write_all(b"\x1b[?1003l\x1b[?1006l")?;
         execute!(
