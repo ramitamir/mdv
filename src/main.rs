@@ -20,6 +20,7 @@ mod viewport;
 #[derive(Parser)]
 #[command(
     name = "mdv",
+    version,
     about = "Graphical Markdown viewer for modern terminals",
     long_about = "Graphical Markdown viewer for modern terminals (Ghostty, Kitty, WezTerm).\n\n\
         Renders headlines as pixel images via the Kitty graphics protocol,\n\
