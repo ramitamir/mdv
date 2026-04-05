@@ -44,7 +44,7 @@ macro_rules! key_fields {
 }
 
 key_fields!(NormalKeys {
-    quit, scroll_down, scroll_up, half_page_down, half_page_up,
+    quit, scroll_down, scroll_up,
     page_down, page_up, top, bottom, search, help,
     next_match, prev_match, source_mode,
 });
@@ -75,8 +75,6 @@ pub struct ResolvedNormalKeys {
     pub quit: KeyBindings,
     pub scroll_down: KeyBindings,
     pub scroll_up: KeyBindings,
-    pub half_page_down: KeyBindings,
-    pub half_page_up: KeyBindings,
     pub page_down: KeyBindings,
     pub page_up: KeyBindings,
     pub top: KeyBindings,
@@ -163,8 +161,6 @@ impl ResolvedKeys {
                 quit:            resolve_key!(normal, quit,            &["q", "esc"]),
                 scroll_down:     resolve_key!(normal, scroll_down,     &["down", "j"]),
                 scroll_up:       resolve_key!(normal, scroll_up,       &["up", "k"]),
-                half_page_down:  resolve_key!(normal, half_page_down,  &[]),
-                half_page_up:    resolve_key!(normal, half_page_up,    &[]),
                 page_down:       resolve_key!(normal, page_down,       &["pagedown"]),
                 page_up:         resolve_key!(normal, page_up,         &["pageup"]),
                 top:             resolve_key!(normal, top,             &["g", "home"]),

@@ -297,14 +297,30 @@ impl Viewport {
         renderer.render_styled_text(&spans, width_px, &opts).image
     }
 
-    fn underlines_from_spans(spans: &[crate::blocks::StyledSpan], _theme: &Theme) -> Vec<graphics::UnderlineRange> {
-        let mut underlines = Vec::new();
+    /// Slice parent highlight ranges into a child's byte-relative ranges.
+    fn slice_highlights(highlights: &[graphics::HighlightRange], offset: usize, len: usize) -> Vec<graphics::HighlightRange> {
+        highlights.iter()
+            .filter_map(|hl| {
+                let end = offset + len;
+                if hl.byte_end > offset && hl.byte_start < end {
+                    Some(graphics::HighlightRange {
+                        byte_start: hl.byte_start.saturating_sub(offset),
+                        byte_end: hl.byte_end.saturating_sub(offset).min(len),
+                        color: hl.color, alpha: hl.alpha,
+                    })
+                } else { None }
+            })
+            .collect()
+    }
+
+    fn link_ranges_from_spans(spans: &[crate::blocks::StyledSpan], _theme: &Theme) -> Vec<graphics::LinkRange> {
+        let mut links = Vec::new();
         let mut cursor = 0usize;
         let link_icon_bytes = "\u{00A0}↗".len(); // NBSP + arrow appended to link text
         for span in spans {
             let len = span.text.len();
             if span.link_url.is_some() {
-                underlines.push(graphics::UnderlineRange {
+                links.push(graphics::LinkRange {
                     byte_start: cursor,
                     byte_end: cursor + len + link_icon_bytes,
                     url: span.link_url.clone(),
@@ -314,7 +330,7 @@ impl Viewport {
                 cursor += len;
             }
         }
-        underlines
+        links
     }
 
     fn render_block_image(
@@ -336,24 +352,24 @@ impl Viewport {
                     bold: true,
                     italic: false,
                 }];
-                let underlines = Self::underlines_from_spans(spans, theme);
+                let links = Self::link_ranges_from_spans(spans, theme);
                 let opts = RenderOptions {
                     font_size: font_size * level.font_scale(),
                     line_height_factor: 1.15,
                     highlights,
-                    underlines,
+                    links,
                     ..Default::default()
                 };
                 renderer.render_styled_text(&heading_spans, width_px, &opts).image
             }
             Block::Paragraph { spans } => {
                 let styled = graphics::styled_spans_to_text_spans(spans, theme);
-                let underlines = Self::underlines_from_spans(spans, theme);
+                let links = Self::link_ranges_from_spans(spans, theme);
                 let opts = RenderOptions {
                     font_size,
                     line_height_factor: 1.4,
                     highlights,
-                    underlines,
+                    links,
                     ..Default::default()
                 };
                 renderer.render_styled_text(&styled, width_px, &opts).image
@@ -383,18 +399,7 @@ impl Viewport {
                 let mut byte_cursor = 0usize;
                 for (i, b) in blocks.iter().enumerate() {
                     let child_text_len = b.text_content().len();
-                    let child_hl: Vec<graphics::HighlightRange> = highlights.iter()
-                        .filter_map(|hl| {
-                            let child_end = byte_cursor + child_text_len;
-                            if hl.byte_end > byte_cursor && hl.byte_start < child_end {
-                                Some(graphics::HighlightRange {
-                                    byte_start: hl.byte_start.saturating_sub(byte_cursor),
-                                    byte_end: hl.byte_end.saturating_sub(byte_cursor).min(child_text_len),
-                                    color: hl.color, alpha: hl.alpha,
-                                })
-                            } else { None }
-                        })
-                        .collect();
+                    let child_hl = Self::slice_highlights(&highlights, byte_cursor, child_text_len);
 
                     let child_img = Self::render_block_image(
                         b, renderer, highlighter,
@@ -486,20 +491,7 @@ impl Viewport {
 
                     let item_text_len: usize = item.spans.iter().map(|s| s.text.len()).sum();
 
-                    // Split highlights for this item
-                    let item_highlights: Vec<graphics::HighlightRange> = highlights.iter()
-                        .filter_map(|hl| {
-                            let item_end = byte_cursor + item_text_len;
-                            if hl.byte_end > byte_cursor && hl.byte_start < item_end {
-                                Some(graphics::HighlightRange {
-                                    byte_start: hl.byte_start.saturating_sub(byte_cursor),
-                                    byte_end: hl.byte_end.saturating_sub(byte_cursor).min(item_text_len),
-                                    color: hl.color,
-                                    alpha: hl.alpha,
-                                })
-                            } else { None }
-                        })
-                        .collect();
+                    let item_highlights = Self::slice_highlights(&highlights, byte_cursor, item_text_len);
 
                     // Render bullet (don't store buffer — bullets aren't selectable)
                     let bullet_spans = vec![StyledTextSpan {
@@ -517,13 +509,13 @@ impl Viewport {
                         color: crate::theme::color_to_rgb(theme.heading_text),
                         bold: false, italic: false,
                     });
-                    let item_underlines = Self::underlines_from_spans(&item.spans, theme);
+                    let item_links = Self::link_ranges_from_spans(&item.spans, theme);
                     let text_opts = RenderOptions {
                         font_size,
                         line_height_factor: 1.4,
                         padding_left: bullet_indent,
                         highlights: item_highlights,
-                        underlines: item_underlines,
+                        links: item_links,
                         ..Default::default()
                     };
                     let text_result = renderer.render_styled_text(&text_spans, width_px, &text_opts);
@@ -573,18 +565,7 @@ impl Viewport {
                         byte_cursor += 1; // \n separator before child in text_content()
 
                         let child_text_len = child.text_content().len();
-                        let child_highlights: Vec<graphics::HighlightRange> = highlights.iter()
-                            .filter_map(|hl| {
-                                let child_end = byte_cursor + child_text_len;
-                                if hl.byte_end > byte_cursor && hl.byte_start < child_end {
-                                    Some(graphics::HighlightRange {
-                                        byte_start: hl.byte_start.saturating_sub(byte_cursor),
-                                        byte_end: hl.byte_end.saturating_sub(byte_cursor).min(child_text_len),
-                                        color: hl.color, alpha: hl.alpha,
-                                    })
-                                } else { None }
-                            })
-                            .collect();
+                        let child_highlights = Self::slice_highlights(&highlights, byte_cursor, child_text_len);
 
                         let child_width = width_px.saturating_sub(bullet_indent);
                         let child_img = Self::render_block_image(
@@ -676,17 +657,7 @@ impl Viewport {
                 let mut header_hl: Vec<Vec<graphics::HighlightRange>> = Vec::new();
                 for (ci, cell) in headers.iter().enumerate() {
                     let cell_text_len: usize = cell.iter().map(|s| s.text.len()).sum();
-                    let cell_hl: Vec<graphics::HighlightRange> = highlights.iter()
-                        .filter_map(|hl| {
-                            let cell_end = byte_cursor + cell_text_len;
-                            if hl.byte_end > byte_cursor && hl.byte_start < cell_end {
-                                Some(graphics::HighlightRange {
-                                    byte_start: hl.byte_start.saturating_sub(byte_cursor),
-                                    byte_end: hl.byte_end.saturating_sub(byte_cursor).min(cell_text_len),
-                                    color: hl.color, alpha: hl.alpha,
-                                })
-                            } else { None }
-                        }).collect();
+                    let cell_hl = Self::slice_highlights(&highlights, byte_cursor, cell_text_len);
                     header_hl.push(cell_hl);
                     byte_cursor += cell_text_len;
                     if ci + 1 < headers.len() { byte_cursor += 1; } // space separator
@@ -698,17 +669,7 @@ impl Viewport {
                     let mut row_hl: Vec<Vec<graphics::HighlightRange>> = Vec::new();
                     for (ci, cell) in row.iter().enumerate() {
                         let cell_text_len: usize = cell.iter().map(|s| s.text.len()).sum();
-                        let cell_hl: Vec<graphics::HighlightRange> = highlights.iter()
-                            .filter_map(|hl| {
-                                let cell_end = byte_cursor + cell_text_len;
-                                if hl.byte_end > byte_cursor && hl.byte_start < cell_end {
-                                    Some(graphics::HighlightRange {
-                                        byte_start: hl.byte_start.saturating_sub(byte_cursor),
-                                        byte_end: hl.byte_end.saturating_sub(byte_cursor).min(cell_text_len),
-                                        color: hl.color, alpha: hl.alpha,
-                                    })
-                                } else { None }
-                            }).collect();
+                        let cell_hl = Self::slice_highlights(&highlights, byte_cursor, cell_text_len);
                         row_hl.push(cell_hl);
                         byte_cursor += cell_text_len;
                         if ci + 1 < row.len() { byte_cursor += 1; }

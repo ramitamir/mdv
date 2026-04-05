@@ -34,7 +34,7 @@ pub struct HighlightRange {
 
 /// Options for rendering a styled text block as a pixel image.
 /// A byte range to draw as an underline (for links).
-pub struct UnderlineRange {
+pub struct LinkRange {
     pub byte_start: usize,
     pub byte_end: usize,
     pub url: Option<String>,
@@ -58,7 +58,7 @@ pub struct RenderOptions {
     pub padding_top: u32,
     pub padding_bottom: u32,
     pub highlights: Vec<HighlightRange>,
-    pub underlines: Vec<UnderlineRange>,
+    pub links: Vec<LinkRange>,
     pub use_code_font: bool,
 }
 
@@ -72,7 +72,7 @@ impl Default for RenderOptions {
             padding_top: 0,
             padding_bottom: 0,
             highlights: Vec::new(),
-            underlines: Vec::new(),
+            links: Vec::new(),
             use_code_font: false,
         }
     }
@@ -175,7 +175,7 @@ impl TextRenderer {
         }
 
         // Precompute line byte offsets for highlight/link glyph matching
-        let line_byte_offsets: Vec<usize> = if !opts.highlights.is_empty() || !opts.underlines.is_empty() {
+        let line_byte_offsets: Vec<usize> = if !opts.highlights.is_empty() || !opts.links.is_empty() {
             let full_text: String = spans.iter().map(|s| s.text.as_str()).collect();
             let mut offsets = Vec::new();
             let mut off = 0usize;
@@ -257,10 +257,10 @@ impl TextRenderer {
 
         // Collect link bounding boxes (no underline drawing)
         self.last_link_boxes.clear();
-        if !opts.underlines.is_empty() {
+        if !opts.links.is_empty() {
             for run in buffer.layout_runs() {
                 let line_base = line_byte_offsets.get(run.line_i).copied().unwrap_or(0);
-                for ul in &opts.underlines {
+                for ul in &opts.links {
                     let mut min_x = width_px as f32;
                     let mut max_x = 0.0f32;
                     let mut found = false;

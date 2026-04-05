@@ -89,17 +89,24 @@ pub fn run(mut blocks: Vec<Block>, raw_content: &str, filename: &str, theme: The
                             matches.clear();
                             current_match = 0;
                             let query_lower = search_query.to_lowercase();
+                            let query_len = query_lower.len();
                             for (i, block) in blocks.iter().enumerate() {
-                                let text = block.text_content().to_lowercase();
+                                let text = block.text_content();
+                                let text_lower = text.to_lowercase();
                                 let mut start = 0;
-                                while let Some(pos) = text[start..].find(&query_lower) {
-                                    let abs_pos = start + pos;
+                                while let Some(pos) = text_lower[start..].find(&query_lower) {
+                                    // Map the lowercase byte offset back to the original text
+                                    // by counting the same number of chars
+                                    let char_start = text_lower[..start + pos].chars().count();
+                                    let char_end = text_lower[..start + pos + query_len].chars().count();
+                                    let orig_start: usize = text.char_indices().nth(char_start).map(|(i, _)| i).unwrap_or(text.len());
+                                    let orig_end: usize = text.char_indices().nth(char_end).map(|(i, _)| i).unwrap_or(text.len());
                                     matches.push(SearchMatch {
                                         block_idx: i,
-                                        byte_start: abs_pos,
-                                        byte_end: abs_pos + query_lower.len(),
+                                        byte_start: orig_start,
+                                        byte_end: orig_end,
                                     });
-                                    start = abs_pos + 1;
+                                    start += pos + query_len;
                                 }
                             }
                             // Scroll to first match
@@ -169,7 +176,9 @@ pub fn run(mut blocks: Vec<Block>, raw_content: &str, filename: &str, theme: The
                 // then flush any remaining input bytes
                 std::thread::sleep(Duration::from_millis(50));
                 unsafe extern "C" { fn tcflush(fd: i32, action: i32) -> i32; }
-                unsafe { tcflush(0, 1); } // STDIN_FILENO=0, TCIFLUSH=1 on macOS
+                // TCIFLUSH: 1 on macOS, 0 on Linux
+                let tciflush = if cfg!(target_os = "macos") { 1 } else { 0 };
+                unsafe { tcflush(0, tciflush); }
                 let editor_result = Command::new("sh")
                     .arg("-c")
                     .arg(format!("{} \"{}\"", editor, filename.replace('"', "\\\"")))
@@ -261,7 +270,7 @@ pub fn run(mut blocks: Vec<Block>, raw_content: &str, filename: &str, theme: The
         process_event(
             &first, &keys, &mut scroll_row, &mut quit, &mut changed,
             max_scroll, content_rows, scroll_step, &mut term, &mut viewport,
-            &blocks, &mut transmitted, cell_h, margin_px, margin_cols, cell_w, &theme, &mut cursor_on_link, &mut status_msg, &mut hover_url,
+            &blocks, &mut transmitted, cell_h, margin_px, margin_cols, cell_w, &mut cursor_on_link, &mut status_msg, &mut hover_url,
         )?;
 
         if quit { break; }
@@ -274,7 +283,7 @@ pub fn run(mut blocks: Vec<Block>, raw_content: &str, filename: &str, theme: The
             process_event(
                 &ev, &keys, &mut scroll_row, &mut quit, &mut changed,
                 max_scroll, content_rows, scroll_step, &mut term, &mut viewport,
-                &blocks, &mut transmitted, cell_h, margin_px, margin_cols, cell_w, &theme, &mut cursor_on_link, &mut status_msg, &mut hover_url,
+                &blocks, &mut transmitted, cell_h, margin_px, margin_cols, cell_w, &mut cursor_on_link, &mut status_msg, &mut hover_url,
             )?;
             if quit { break; }
         }
@@ -354,7 +363,6 @@ fn process_event(
     margin_px: u32,
     margin_cols: u16,
     cell_w: u16,
-    _theme: &Theme,
     cursor_on_link: &mut bool,
     status_msg: &mut Option<String>,
     hover_url: &mut Option<String>,
@@ -410,7 +418,8 @@ fn process_event(
                                     *status_msg = Some(format!("Anchor not found: #{}", anchor));
                                 }
                             } else if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("mailto:") {
-                                match std::process::Command::new("open")
+                                let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+                                match std::process::Command::new(opener)
                                     .arg(&url)
                                     .stdout(std::process::Stdio::null())
                                     .stderr(std::process::Stdio::null())
