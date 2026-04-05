@@ -382,10 +382,12 @@ impl TextRenderer {
                     bold: pane.bold,
                     italic: false,
                 }];
+                // Render text with pane background so anti-aliasing blends correctly
                 let opts = RenderOptions {
                     font_size,
                     line_height_factor: 1.0,
-                    use_code_font: true, // monospace for status bar
+                    use_code_font: true,
+                    background: Some(pane.bg),
                     ..Default::default()
                 };
                 let result = self.render_styled_text(&spans, width_px, &opts);
@@ -396,6 +398,7 @@ impl TextRenderer {
 
                 let clip_x = x1;
 
+                // Copy (not blend) since text was rendered on the correct background
                 for ty in 0..th.min(height_px) {
                     for tx in 0..tw {
                         let src_idx = ((ty * tw + tx) * 4) as usize;
@@ -404,10 +407,7 @@ impl TextRenderer {
                         if dx >= clip_x || dx >= width_px || dy >= height_px { continue; }
                         let dst_idx = ((dy * width_px + dx) * 4) as usize;
                         if src_idx + 3 < text_data.len() && dst_idx + 3 < pixels.len() {
-                            let alpha = text_data[src_idx + 3] as u32;
-                            if alpha > 0 {
-                                blend_pixel(&mut pixels[dst_idx..dst_idx+4], &text_data[src_idx..src_idx+4], alpha);
-                            }
+                            pixels[dst_idx..dst_idx+4].copy_from_slice(&text_data[src_idx..src_idx+4]);
                         }
                     }
                 }
