@@ -125,8 +125,8 @@ impl Viewport {
             if idx < self.link_boxes.len() {
                 self.link_boxes[idx] = std::mem::take(&mut self.renderer.last_link_boxes);
             }
-            // Pad height to a multiple of cell_height so the terminal
-            // doesn't clip the last row of pixels
+            // Pad height to a multiple of cell_height — Kitty protocol
+            // displays images in whole terminal rows
             let ch = self.cell_height;
             let raw_h = img.height();
             let w = img.width();
@@ -294,12 +294,14 @@ impl Viewport {
             Block::Heading { level, spans, .. } => {
                 let text: String = spans.iter().map(|s| s.text.as_str()).collect();
                 let scale = level.font_scale();
+                let pad_top = (font_size * scale * 0.8) as u32;
                 let span = vec![StyledTextSpan {
                     text, color: [230, 230, 230], bold: true, italic: false,
                 }];
                 let opts = RenderOptions {
                     font_size: font_size * scale,
                     line_height_factor: 1.15,
+                    padding_top: pad_top,
                     ..Default::default()
                 };
                 self.renderer.measure_text_height(&span, width_px, &opts)
@@ -348,14 +350,15 @@ impl Viewport {
             Block::List { items, .. } => {
                 let bullet_indent = (font_size * 1.5) as u32;
                 let mut h = 0u32;
-                for item in items {
-                    // Item text with trailing newline (same as render)
+                for (item_idx, item) in items.iter().enumerate() {
                     let mut text_spans: Vec<StyledTextSpan> = item.spans.iter().map(|s| StyledTextSpan {
                         text: s.text.clone(), color: [0, 0, 0], bold: s.style.bold, italic: s.style.italic,
                     }).collect();
-                    text_spans.push(StyledTextSpan {
-                        text: "\n".to_string(), color: [0, 0, 0], bold: false, italic: false,
-                    });
+                    if item_idx + 1 < items.len() {
+                        text_spans.push(StyledTextSpan {
+                            text: "\n".to_string(), color: [0, 0, 0], bold: false, italic: false,
+                        });
+                    }
                     let opts = RenderOptions {
                         font_size,
                         line_height_factor: 1.4,
@@ -510,9 +513,13 @@ impl Viewport {
                     italic: false,
                 }];
                 let links = Self::link_ranges_from_spans(spans, theme);
+                // Absorb heading_before as padding_top inside the image
+                let scale = level.font_scale();
+                let pad_top = (font_size * scale * 0.8) as u32;
                 let opts = RenderOptions {
-                    font_size: font_size * level.font_scale(),
+                    font_size: font_size * scale,
                     line_height_factor: 1.15,
+                    padding_top: pad_top,
                     highlights,
                     links,
                     ..Default::default()
@@ -661,11 +668,14 @@ impl Viewport {
 
                     // Render item text with padding_left for wrapped lines
                     let mut text_spans = graphics::styled_spans_to_text_spans(&item.spans, theme);
-                    text_spans.push(StyledTextSpan {
-                        text: "\n".to_string(),
-                        color: crate::theme::color_to_rgb(theme.heading_text),
-                        bold: false, italic: false,
-                    });
+                    // Add trailing newline between items (not after the last one)
+                    if item_idx + 1 < items.len() {
+                        text_spans.push(StyledTextSpan {
+                            text: "\n".to_string(),
+                            color: crate::theme::color_to_rgb(theme.heading_text),
+                            bold: false, italic: false,
+                        });
+                    }
                     let item_links = Self::link_ranges_from_spans(&item.spans, theme);
                     let text_opts = RenderOptions {
                         font_size,

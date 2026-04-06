@@ -127,8 +127,8 @@ impl ResolvedSpacing {
     pub fn with_overrides(config: &Option<SpacingConfig>) -> Self {
         let s = config.as_ref();
         ResolvedSpacing {
-            block_gap: s.and_then(|c| c.block_gap).unwrap_or(0.4),
-            heading_before: s.and_then(|c| c.heading_before).unwrap_or(1.5),
+            block_gap: s.and_then(|c| c.block_gap).unwrap_or(0.0),
+            heading_before: s.and_then(|c| c.heading_before).unwrap_or(0.0),
             heading_after: s.and_then(|c| c.heading_after).unwrap_or(0.0),
         }
     }
