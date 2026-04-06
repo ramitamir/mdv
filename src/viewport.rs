@@ -126,7 +126,7 @@ impl Viewport {
                 self.link_boxes[idx] = std::mem::take(&mut self.renderer.last_link_boxes);
             }
             // Pad height to a multiple of cell_height — Kitty protocol
-            // displays images in whole terminal rows
+            // requires whole terminal rows for proper display
             let ch = self.cell_height;
             let raw_h = img.height();
             let w = img.width();
@@ -310,9 +310,11 @@ impl Viewport {
                 let styled: Vec<StyledTextSpan> = spans.iter().map(|s| StyledTextSpan {
                     text: s.text.clone(), color: [0, 0, 0], bold: s.style.bold, italic: s.style.italic,
                 }).collect();
+                let pad_bottom = (font_size * 0.3) as u32;
                 let opts = RenderOptions {
                     font_size,
                     line_height_factor: 1.4,
+                    padding_bottom: pad_bottom,
                     ..Default::default()
                 };
                 self.renderer.measure_text_height(&styled, width_px, &opts)
@@ -529,9 +531,11 @@ impl Viewport {
             Block::Paragraph { spans } => {
                 let styled = graphics::styled_spans_to_text_spans(spans, theme);
                 let links = Self::link_ranges_from_spans(spans, theme);
+                let pad_bottom = (font_size * 0.3) as u32;
                 let opts = RenderOptions {
                     font_size,
                     line_height_factor: 1.4,
+                    padding_bottom: pad_bottom,
                     highlights,
                     links,
                     ..Default::default()
@@ -677,10 +681,12 @@ impl Viewport {
                         });
                     }
                     let item_links = Self::link_ranges_from_spans(&item.spans, theme);
+                    let pad_bottom = if item_idx + 1 == items.len() { (font_size * 0.3) as u32 } else { 0 };
                     let text_opts = RenderOptions {
                         font_size,
                         line_height_factor: 1.4,
                         padding_left: bullet_indent,
+                        padding_bottom: pad_bottom,
                         highlights: item_highlights,
                         links: item_links,
                         ..Default::default()
