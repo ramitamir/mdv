@@ -22,6 +22,10 @@ pub struct Viewport {
     search_highlights: Vec<(usize, usize, usize, bool)>,
     /// Per-block link bounding boxes (populated during rendering)
     link_boxes: Vec<Vec<graphics::LinkBox>>,
+    /// Next block index to measure in background (all blocks before this are measured)
+    pub next_unmeasured: usize,
+    /// Set by ensure_block_rendered when a height correction occurs; cleared by caller
+    pub height_corrected_at: Option<usize>,
 }
 
 impl Viewport {
@@ -65,6 +69,8 @@ impl Viewport {
             base_dir,
             search_highlights: Vec::new(),
             link_boxes: vec![Vec::new(); blocks.len()],
+            next_unmeasured: 0,
+            height_corrected_at: None,
         }
     }
 
@@ -144,6 +150,7 @@ impl Viewport {
                     self.block_offsets[j] = (self.block_offsets[j] as i64 + delta) as u32;
                 }
                 self.total_height = (self.total_height as i64 + delta) as u32;
+                self.height_corrected_at = Some(idx);
             }
 
             self.block_cache[idx] = Some(img);
@@ -198,22 +205,13 @@ impl Viewport {
 
     pub fn resize(&mut self, blocks: &[Block], new_width_px: u32) {
         self.width_px = new_width_px;
-        self.block_heights = blocks.iter()
-            .map(|b| Self::estimate_block_height(b, new_width_px, self.font_size))
-            .collect();
-        self.block_cache = vec![None; blocks.len()];
-
-        let mut block_offsets = Vec::with_capacity(blocks.len());
-        let mut cursor = 0u32;
-        for (i, &h) in self.block_heights.iter().enumerate() {
-            block_offsets.push(cursor);
-            cursor += h;
-            if i + 1 < self.block_heights.len() {
-                cursor += Self::gap_between(&blocks[i], &blocks[i + 1], self.gap, self.heading_before, self.heading_after);
-            }
+        // Re-measure all blocks at new width
+        for i in 0..blocks.len() {
+            self.block_heights[i] = self.measure_block_height(&blocks[i]);
         }
-        self.block_offsets = block_offsets;
-        self.total_height = cursor;
+        self.block_cache = vec![None; blocks.len()];
+        self.next_unmeasured = blocks.len(); // all measured
+        self.recompute_offsets(blocks);
     }
 
     fn gap_between(above: &Block, below: &Block, default_gap: u32, heading_before: u32, heading_after: u32) -> u32 {
@@ -284,6 +282,161 @@ impl Viewport {
             Block::Image { .. } => (font_size * 10.0) as u32, // rough estimate, corrected on render
             Block::ThematicBreak => font_size as u32,
         }
+    }
+
+    /// Measure exact block height via cosmic-text layout (no rasterization).
+    fn measure_block_height(&mut self, block: &Block) -> u32 {
+        let font_size = self.font_size;
+        let width_px = self.width_px;
+        let ch = self.cell_height;
+
+        let raw_h = match block {
+            Block::Heading { level, spans, .. } => {
+                let text: String = spans.iter().map(|s| s.text.as_str()).collect();
+                let scale = level.font_scale();
+                let span = vec![StyledTextSpan {
+                    text, color: [230, 230, 230], bold: true, italic: false,
+                }];
+                let opts = RenderOptions {
+                    font_size: font_size * scale,
+                    line_height_factor: 1.15,
+                    ..Default::default()
+                };
+                self.renderer.measure_text_height(&span, width_px, &opts)
+            }
+            Block::Paragraph { spans } => {
+                let styled: Vec<StyledTextSpan> = spans.iter().map(|s| StyledTextSpan {
+                    text: s.text.clone(), color: [0, 0, 0], bold: s.style.bold, italic: s.style.italic,
+                }).collect();
+                let opts = RenderOptions {
+                    font_size,
+                    line_height_factor: 1.4,
+                    ..Default::default()
+                };
+                self.renderer.measure_text_height(&styled, width_px, &opts)
+            }
+            Block::CodeBlock { lang, code } => {
+                // Build same spans as render_code_block
+                let spans = match lang {
+                    Some(lang_str) => vec![StyledTextSpan {
+                        text: format!("{}\n\n{}", lang_str, code),
+                        color: [255, 255, 255], bold: false, italic: false,
+                    }],
+                    None => vec![StyledTextSpan {
+                        text: code.clone(),
+                        color: [255, 255, 255], bold: false, italic: false,
+                    }],
+                };
+                let inset = (font_size * 2.0) as u32;
+                let padding = (font_size * 0.8) as u32;
+                let inner_width = width_px.saturating_sub(inset * 2);
+                let opts = RenderOptions {
+                    font_size,
+                    line_height_factor: 1.3,
+                    padding_left: padding,
+                    padding_top: padding / 2,
+                    padding_bottom: padding,
+                    use_code_font: true,
+                    ..Default::default()
+                };
+                self.renderer.measure_text_height(&spans, inner_width, &opts)
+            }
+            Block::List { items, .. } => {
+                let bullet_indent = (font_size * 1.5) as u32;
+                let mut h = 0u32;
+                for item in items {
+                    // Item text with trailing newline (same as render)
+                    let mut text_spans: Vec<StyledTextSpan> = item.spans.iter().map(|s| StyledTextSpan {
+                        text: s.text.clone(), color: [0, 0, 0], bold: s.style.bold, italic: s.style.italic,
+                    }).collect();
+                    text_spans.push(StyledTextSpan {
+                        text: "\n".to_string(), color: [0, 0, 0], bold: false, italic: false,
+                    });
+                    let opts = RenderOptions {
+                        font_size,
+                        line_height_factor: 1.4,
+                        padding_left: bullet_indent,
+                        ..Default::default()
+                    };
+                    h += self.renderer.measure_text_height(&text_spans, width_px, &opts);
+                    // Child blocks
+                    for child in &item.children {
+                        h += self.measure_block_height(child);
+                    }
+                }
+                h
+            }
+            Block::BlockQuote { blocks: inner } => {
+                let bar_width = 4u32;
+                let bar_gap = (font_size * 0.5) as u32;
+                let inset = (font_size * 2.0) as u32;
+                let pad_v = (font_size * 0.4) as u32;
+                let child_gap = (font_size * 0.3) as u32;
+                let content_width = width_px.saturating_sub(inset * 2).saturating_sub(bar_width + bar_gap);
+                let mut h = pad_v * 2;
+                for (i, b) in inner.iter().enumerate() {
+                    // Temporarily override width for child measurement
+                    let saved_width = self.width_px;
+                    self.width_px = content_width;
+                    h += self.measure_block_height(b);
+                    self.width_px = saved_width;
+                    if i + 1 < inner.len() {
+                        h += child_gap;
+                    }
+                }
+                h
+            }
+            Block::Table { rows, .. } => {
+                let line_height = (font_size * 1.4).ceil();
+                let row_h = (line_height as u32) + 9;
+                (1 + rows.len() as u32) * row_h + (2 + rows.len() as u32)
+            }
+            Block::Image { .. } => (font_size * 10.0) as u32,
+            Block::ThematicBreak => self.cell_height,
+        };
+
+        // Pad to cell_height multiple (same as ensure_block_rendered)
+        if ch > 0 { ((raw_h + ch - 1) / ch) * ch } else { raw_h }
+    }
+
+    /// Whether there are unmeasured blocks remaining.
+    pub fn has_unmeasured(&self, total_blocks: usize) -> bool {
+        self.next_unmeasured < total_blocks
+    }
+
+    /// Measure up to `count` blocks starting at next_unmeasured.
+    /// Updates block_heights, block_offsets, and total_height.
+    pub fn measure_batch(&mut self, blocks: &[Block], count: usize) {
+        let end = (self.next_unmeasured + count).min(blocks.len());
+        for i in self.next_unmeasured..end {
+            self.block_heights[i] = self.measure_block_height(&blocks[i]);
+        }
+        self.next_unmeasured = end;
+        self.recompute_offsets(blocks);
+    }
+
+    /// Measure blocks 0..n (first viewport), update heights and offsets.
+    pub fn measure_initial(&mut self, blocks: &[Block], n: usize) {
+        let n = n.min(blocks.len());
+        for i in 0..n {
+            self.block_heights[i] = self.measure_block_height(&blocks[i]);
+        }
+        self.next_unmeasured = n;
+        self.recompute_offsets(blocks);
+    }
+
+    /// Recompute block_offsets and total_height from block_heights.
+    fn recompute_offsets(&mut self, blocks: &[Block]) {
+        self.block_offsets.clear();
+        let mut cursor = 0u32;
+        for (i, &h) in self.block_heights.iter().enumerate() {
+            self.block_offsets.push(cursor);
+            cursor += h;
+            if i + 1 < self.block_heights.len() {
+                cursor += Self::gap_between(&blocks[i], &blocks[i + 1], self.gap, self.heading_before, self.heading_after);
+            }
+        }
+        self.total_height = cursor;
     }
 
     fn render_alt_text(alt: &str, url: &str, renderer: &mut TextRenderer, width_px: u32, font_size: f32, theme: &Theme) -> DynamicImage {

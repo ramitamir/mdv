@@ -122,6 +122,49 @@ impl TextRenderer {
     }
 
     /// Render rich styled text into a pixel image + retained Buffer for hit-testing.
+    /// Measure text height via cosmic-text layout without rasterization.
+    pub fn measure_text_height(
+        &mut self,
+        spans: &[StyledTextSpan],
+        width_px: u32,
+        opts: &RenderOptions,
+    ) -> u32 {
+        let font_size = opts.font_size;
+        let line_height = (font_size * opts.line_height_factor).ceil();
+        let metrics = Metrics::new(font_size, line_height);
+        let mut buffer = Buffer::new(&mut self.font_system, metrics);
+        let content_width = width_px.saturating_sub(opts.padding_left);
+        let active_font = if opts.use_code_font { &self.code_font_family } else { &self.font_family };
+
+        {
+            let mut borrowed = buffer.borrow_with(&mut self.font_system);
+            borrowed.set_size(Some(content_width as f32), None);
+
+            let rich: Vec<(&str, Attrs)> = spans
+                .iter()
+                .map(|s| {
+                    let mut attrs = Attrs::new()
+                        .family(Family::Name(active_font))
+                        .color(Color::rgb(s.color[0], s.color[1], s.color[2]));
+                    if s.bold {
+                        attrs = attrs.weight(Weight::BOLD);
+                    }
+                    if s.italic {
+                        attrs = attrs.style(Style::Italic);
+                    }
+                    (s.text.as_str(), attrs)
+                })
+                .collect();
+
+            let default_attrs = Attrs::new().family(Family::Name(active_font));
+            borrowed.set_rich_text(rich, &default_attrs, Shaping::Advanced, Some(Align::Left));
+            borrowed.shape_until_scroll(true);
+        }
+
+        let line_count = buffer.layout_runs().count().max(1) as u32;
+        (line_height as u32) * line_count + opts.padding_top + opts.padding_bottom
+    }
+
     pub fn render_styled_text(
         &mut self,
         spans: &[StyledTextSpan],

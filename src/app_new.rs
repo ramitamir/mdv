@@ -34,6 +34,15 @@ pub fn run(mut blocks: Vec<Block>, raw_content: &str, filename: &str, theme: The
 
     let mut viewport = Viewport::new(&blocks, width_px, font_size, cell_h, &theme, font.as_deref(), &spacing, base_dir.clone());
 
+    // Measure first viewport of blocks synchronously for accurate layout
+    let viewport_height_px = term.content_rows() as u32 * cell_h as u32;
+    let first_viewport_blocks = viewport.block_offsets
+        .iter()
+        .position(|&off| off >= viewport_height_px)
+        .unwrap_or(blocks.len())
+        .min(blocks.len());
+    viewport.measure_initial(&blocks, first_viewport_blocks + 1);
+
     let mut scroll_row: u32 = 0;
     let scroll_step: u32 = 1;
     let mut scroll_count: u32 = 0; // for periodic eviction
@@ -58,11 +67,36 @@ pub fn run(mut blocks: Vec<Block>, raw_content: &str, filename: &str, theme: The
     draw_status(&mut term, &mut viewport, filename, scroll_row, &theme, hover_url.as_deref())?;
 
     loop {
+        // Background measurement during idle time
+        if viewport.has_unmeasured(blocks.len()) {
+            // Record which block is first visible before measurement
+            let scroll_px = scroll_row as u64 * cell_h as u64;
+            let first_visible = viewport.block_offsets
+                .iter()
+                .rposition(|&off| (off as u64) <= scroll_px)
+                .unwrap_or(0);
+
+            viewport.measure_batch(&blocks, 10);
+
+            // Adjust scroll to keep the same content visible
+            if first_visible < viewport.block_offsets.len() {
+                scroll_row = viewport.block_offsets[first_visible] / cell_h as u32;
+            }
+        }
+
         let total_rows = pixel_to_rows(viewport.total_height, cell_h);
         let content_rows = term.content_rows() as u32;
         let max_scroll = total_rows.saturating_sub(content_rows);
 
-        // Read first event (blocking)
+        // Poll for input — short timeout if still measuring, block forever if done
+        let timeout = if viewport.has_unmeasured(blocks.len()) {
+            Duration::from_millis(10)
+        } else {
+            Duration::from_secs(3600)
+        };
+        if !event::poll(timeout)? {
+            continue; // timeout — go back to measure more blocks
+        }
         let first = event::read()?;
         let mut quit = false;
         let mut changed = false;
@@ -746,6 +780,15 @@ fn ensure_blocks_for_range(
             let image_id = (i + 1) as u32;
             term.transmit_virtual(image_id, rgba.as_raw(), img.width(), img.height())?;
             transmitted.insert(i);
+
+            // Safety net: if height correction occurred, invalidate blocks below
+            if let Some(corrected_idx) = viewport.height_corrected_at.take() {
+                for j in (corrected_idx + 1)..blocks.len() {
+                    if transmitted.remove(&j) {
+                        let _ = term.delete_image((j + 1) as u32);
+                    }
+                }
+            }
         }
     }
     Ok(())
