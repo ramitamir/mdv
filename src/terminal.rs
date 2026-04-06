@@ -15,6 +15,9 @@ pub struct Terminal {
     pub cell_height: u16,
 }
 
+/// Max image rows before needing to split into chunks (limited by diacritic count).
+pub const MAX_IMAGE_ROWS: u32 = 10;
+
 fn diacritic(n: u32) -> char {
     const DIACRITICS: [u32; 57] = [
         0x0305, 0x030D, 0x030E, 0x0310, 0x0312, 0x033D, 0x033E, 0x033F,

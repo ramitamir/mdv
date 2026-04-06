@@ -316,12 +316,16 @@ impl Viewport {
                 self.renderer.measure_text_height(&styled, width_px, &opts)
             }
             Block::CodeBlock { lang, code } => {
-                // Build same spans as render_code_block
-                let spans = match lang {
-                    Some(lang_str) => vec![StyledTextSpan {
-                        text: format!("{}\n\n{}", lang_str, code),
-                        color: [255, 255, 255], bold: false, italic: false,
-                    }],
+                // Build same spans as render_code_block (including syntax highlighting)
+                let spans = match lang.as_deref() {
+                    Some(lang_str) => {
+                        let mut s = vec![StyledTextSpan {
+                            text: format!("{}\n\n", lang_str),
+                            color: [128, 128, 128], bold: false, italic: false,
+                        }];
+                        s.extend(self.highlighter.highlight_to_styled_spans(code, lang_str));
+                        s
+                    }
                     None => vec![StyledTextSpan {
                         text: code.clone(),
                         color: [255, 255, 255], bold: false, italic: false,

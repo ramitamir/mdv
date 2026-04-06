@@ -155,7 +155,7 @@ pub fn run(mut blocks: Vec<Block>, raw_content: &str, filename: &str, theme: The
                                 .collect();
                             let affected = viewport.set_search_highlights(highlights);
                             for idx in &affected {
-                                let _ = term.delete_image((*idx + 1) as u32);
+                                for c in 0..20 { let _ = term.delete_image(block_image_id(*idx, c)); }
                                 transmitted.remove(idx);
                             }
                             // Full redraw
@@ -286,7 +286,7 @@ pub fn run(mut blocks: Vec<Block>, raw_content: &str, filename: &str, theme: The
             } else if key.code == KeyCode::Esc && !search_query.is_empty() {
                 let affected = viewport.clear_search_highlights();
                 for idx in &affected {
-                    let _ = term.delete_image((*idx + 1) as u32);
+                    for c in 0..20 { let _ = term.delete_image(block_image_id(*idx, c)); }
                     transmitted.remove(idx);
                 }
                 search_query.clear();
@@ -551,8 +551,7 @@ fn redraw(
         if !transmitted.contains(&i) {
             let img = viewport.ensure_block_rendered(i, blocks, theme);
             let rgba = img.as_rgba8().expect("image is rgba8");
-            let image_id = (i + 1) as u32;
-            term.transmit_virtual(image_id, rgba.as_raw(), img.width(), img.height())?;
+            transmit_block_image(term, i, rgba.as_raw(), img.width(), img.height(), cell_h)?;
             transmitted.insert(i);
         }
     }
@@ -577,10 +576,11 @@ fn redraw(
             let block_bottom = block_top + viewport.block_heights[idx];
             if pixel_y >= block_top && pixel_y < block_bottom && transmitted.contains(&idx) {
                 let row_in_image = (pixel_y - block_top) / ch;
-                let image_id = (idx + 1) as u32;
-                // Move cursor to margin offset before printing placeholder
+                let chunk = row_in_image / crate::terminal::MAX_IMAGE_ROWS;
+                let row_in_chunk = row_in_image % crate::terminal::MAX_IMAGE_ROWS;
+                let image_id = block_image_id(idx, chunk);
                 crossterm::queue!(term.stdout_mut(), crossterm::cursor::MoveTo(margin_cols, screen_row))?;
-                term.print_placeholder_row(image_id, row_in_image, cols)?;
+                term.print_placeholder_row(image_id, row_in_chunk, cols)?;
                 printed = true;
             }
         }
@@ -625,12 +625,49 @@ fn evict_distant(
         .collect();
 
     for i in to_evict {
-        let image_id = (i + 1) as u32;
-        let _ = term.delete_image(image_id);
+        for c in 0..20 { let _ = term.delete_image(block_image_id(i, c)); }
         transmitted.remove(&i);
     }
 
     viewport.evict_distant_blocks(scroll_px, viewport_px);
+}
+
+/// Image ID for a block chunk. Block i, chunk c → unique ID.
+/// Chunk 0 covers rows 0..MAX_IMAGE_ROWS, chunk 1 covers MAX_IMAGE_ROWS..2*MAX_IMAGE_ROWS, etc.
+fn block_image_id(block_idx: usize, chunk: u32) -> u32 {
+    (block_idx as u32 + 1) * 1000 + chunk
+}
+
+/// Number of chunks needed for an image of given height.
+fn block_chunk_count(image_height: u32, cell_h: u16) -> u32 {
+    let image_rows = pixel_to_rows(image_height, cell_h);
+    (image_rows + crate::terminal::MAX_IMAGE_ROWS - 1) / crate::terminal::MAX_IMAGE_ROWS
+}
+
+/// Transmit a block image, splitting into chunks if taller than MAX_IMAGE_ROWS.
+fn transmit_block_image(
+    term: &mut Terminal,
+    block_idx: usize,
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    cell_h: u16,
+) -> Result<()> {
+    let max_chunk_px = crate::terminal::MAX_IMAGE_ROWS * cell_h as u32;
+    let chunks = block_chunk_count(height, cell_h);
+
+    for c in 0..chunks {
+        let y_start = c * max_chunk_px;
+        let y_end = ((c + 1) * max_chunk_px).min(height);
+        let chunk_h = y_end - y_start;
+        let row_bytes = (width * 4) as usize;
+        let start = y_start as usize * row_bytes;
+        let end = y_end as usize * row_bytes;
+        let chunk_data = &rgba[start..end];
+        let id = block_image_id(block_idx, c);
+        term.transmit_virtual(id, chunk_data, width, chunk_h)?;
+    }
+    Ok(())
 }
 
 fn pixel_to_rows(pixels: u32, cell_h: u16) -> u32 {
@@ -721,11 +758,11 @@ fn incremental_scroll(
     if delta > 0 {
         let exposed_start = new_scroll_px + vp_px - abs_delta as u32 * ch;
         let exposed_end = new_scroll_px + vp_px;
-        ensure_blocks_for_range(term, viewport, blocks, theme, transmitted, exposed_start, exposed_end)?;
+        ensure_blocks_for_range(term, viewport, blocks, theme, transmitted, exposed_start, exposed_end, cell_h)?;
     } else {
         let exposed_start = new_scroll_px;
         let exposed_end = new_scroll_px + abs_delta as u32 * ch;
-        ensure_blocks_for_range(term, viewport, blocks, theme, transmitted, exposed_start, exposed_end)?;
+        ensure_blocks_for_range(term, viewport, blocks, theme, transmitted, exposed_start, exposed_end, cell_h)?;
     }
 
     if delta > 0 {
@@ -762,6 +799,7 @@ fn ensure_blocks_for_range(
     transmitted: &mut HashSet<usize>,
     range_start: u32,
     range_end: u32,
+    cell_h: u16,
 ) -> Result<()> {
     let first = viewport.block_offsets
         .partition_point(|&off| off < range_start)
@@ -777,15 +815,14 @@ fn ensure_blocks_for_range(
         if !transmitted.contains(&i) {
             let img = viewport.ensure_block_rendered(i, blocks, theme);
             let rgba = img.as_rgba8().expect("image is rgba8");
-            let image_id = (i + 1) as u32;
-            term.transmit_virtual(image_id, rgba.as_raw(), img.width(), img.height())?;
+            transmit_block_image(term, i, rgba.as_raw(), img.width(), img.height(), cell_h)?;
             transmitted.insert(i);
 
             // Safety net: if height correction occurred, invalidate blocks below
             if let Some(corrected_idx) = viewport.height_corrected_at.take() {
                 for j in (corrected_idx + 1)..blocks.len() {
                     if transmitted.remove(&j) {
-                        let _ = term.delete_image((j + 1) as u32);
+                        for c in 0..20 { let _ = term.delete_image(block_image_id(j, c)); }
                     }
                 }
             }
@@ -817,8 +854,10 @@ fn print_row(
 
         if pixel_y >= block_top && pixel_y < block_bottom && transmitted.contains(&idx) {
             let row_in_image = (pixel_y - block_top) / ch32;
-            let image_id = (idx + 1) as u32;
-            term.print_placeholder_row(image_id, row_in_image, cols)?;
+            let chunk = row_in_image / crate::terminal::MAX_IMAGE_ROWS;
+            let row_in_chunk = row_in_image % crate::terminal::MAX_IMAGE_ROWS;
+            let image_id = block_image_id(idx, chunk);
+            term.print_placeholder_row(image_id, row_in_chunk, cols)?;
             return Ok(());
         }
     }
@@ -863,7 +902,7 @@ fn navigate_match(
         .collect();
     let affected = viewport.set_search_highlights(highlights);
     for idx in &affected {
-        let _ = term.delete_image((*idx + 1) as u32);
+        for c in 0..20 { let _ = term.delete_image(block_image_id(*idx, c)); }
         transmitted.remove(idx);
     }
     redraw(
