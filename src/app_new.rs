@@ -59,6 +59,12 @@ pub fn run(mut blocks: Vec<Block>, raw_content: &str, filename: &str, theme: The
     let mut matches: Vec<SearchMatch> = Vec::new();
     let mut current_match: usize = 0;
 
+    // Set terminal background color from theme
+    {
+        let [r, g, b] = crate::theme::color_to_rgb(theme.background);
+        write!(term.stdout_mut(), "\x1b[48;2;{};{};{}m", r, g, b)?;
+    }
+
     // Initial render
     redraw(
         &mut term, &mut viewport, &blocks, &theme,

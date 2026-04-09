@@ -621,7 +621,7 @@ impl TextRenderer {
 
         let mut pixels = vec![0u8; (width_px * height_px * 4) as usize];
         let grid_color = crate::theme::color_to_rgb(theme.table_border);
-        let body_color = crate::theme::color_to_rgb(theme.heading_text);
+        let body_color = crate::theme::color_to_rgb(theme.text);
 
         // Draw horizontal grid lines
         for row_idx in 0..=total_data_rows {
@@ -758,7 +758,7 @@ pub fn styled_spans_to_text_spans(
         } else if s.link_url.is_some() {
             crate::theme::color_to_rgb(theme.link)
         } else {
-            crate::theme::color_to_rgb(theme.heading_text)
+            crate::theme::color_to_rgb(theme.text)
         };
         let text = if s.link_url.is_some() {
             format!("{}\u{00A0}↗", s.text)

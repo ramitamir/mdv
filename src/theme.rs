@@ -3,6 +3,10 @@ use serde::Deserialize;
 
 #[derive(Debug, Clone)]
 pub struct Theme {
+    // Global
+    pub background: Color,
+    pub text: Color,
+
     // Status bar mode pills
     pub status_bar_view: Color,
     pub status_bar_source: Color,
@@ -53,6 +57,8 @@ pub struct Theme {
 
 #[derive(Debug, Default, Deserialize)]
 pub struct ColorsConfig {
+    pub background: Option<String>,
+    pub text: Option<String>,
     pub status_bar_view: Option<String>,
     pub status_bar_source: Option<String>,
     pub status_bar_select: Option<String>,
@@ -114,6 +120,8 @@ pub fn color_to_rgb(c: Color) -> [u8; 3] {
 
 fn default_theme() -> Theme {
     Theme {
+        background: Color::Rgb(22, 22, 30),
+        text: Color::Rgb(200, 200, 210),
         status_bar_view: Color::Rgb(40, 60, 120),
         status_bar_source: Color::Rgb(30, 100, 50),
         status_bar_select: Color::Rgb(140, 90, 20),
@@ -153,6 +161,8 @@ fn default_theme() -> Theme {
 
 fn catppuccin_mocha() -> Theme {
     Theme {
+        background: Color::Rgb(0x1E, 0x1E, 0x2E),         // base
+        text: Color::Rgb(0xCD, 0xD6, 0xF4),               // text
         status_bar_view: Color::Rgb(0x89, 0xB4, 0xFA),    // blue
         status_bar_source: Color::Rgb(0xA6, 0xE3, 0xA1),  // green
         status_bar_select: Color::Rgb(0xFA, 0xB3, 0x87),  // peach
@@ -192,6 +202,8 @@ fn catppuccin_mocha() -> Theme {
 
 fn catppuccin_latte() -> Theme {
     Theme {
+        background: Color::Rgb(0xEF, 0xF1, 0xF5),         // base
+        text: Color::Rgb(0x4C, 0x4F, 0x69),               // text
         status_bar_view: Color::Rgb(0x1E, 0x66, 0xF5),     // blue
         status_bar_source: Color::Rgb(0x40, 0xA0, 0x2B),   // green
         status_bar_select: Color::Rgb(0xFE, 0x64, 0x0B),    // peach
@@ -231,6 +243,8 @@ fn catppuccin_latte() -> Theme {
 
 fn catppuccin_frappe() -> Theme {
     Theme {
+        background: Color::Rgb(0x30, 0x34, 0x46),         // base
+        text: Color::Rgb(0xC6, 0xD0, 0xF5),               // text
         status_bar_view: Color::Rgb(0x8C, 0xAA, 0xEE),
         status_bar_source: Color::Rgb(0xA6, 0xD1, 0x89),
         status_bar_select: Color::Rgb(0xEF, 0x9F, 0x76),
@@ -270,6 +284,8 @@ fn catppuccin_frappe() -> Theme {
 
 fn catppuccin_macchiato() -> Theme {
     Theme {
+        background: Color::Rgb(0x24, 0x27, 0x3A),         // base
+        text: Color::Rgb(0xCA, 0xD3, 0xF5),               // text
         status_bar_view: Color::Rgb(0x8A, 0xAD, 0xF4),
         status_bar_source: Color::Rgb(0xA6, 0xDA, 0x95),
         status_bar_select: Color::Rgb(0xF5, 0xA9, 0x7F),
@@ -309,6 +325,8 @@ fn catppuccin_macchiato() -> Theme {
 
 fn dracula() -> Theme {
     Theme {
+        background: Color::Rgb(0x28, 0x2A, 0x36),         // background
+        text: Color::Rgb(0xF8, 0xF8, 0xF2),               // foreground
         status_bar_view: Color::Rgb(0xBD, 0x93, 0xF9),
         status_bar_source: Color::Rgb(0x50, 0xFA, 0x7B),
         status_bar_select: Color::Rgb(0xFF, 0xB8, 0x6C),
@@ -348,6 +366,8 @@ fn dracula() -> Theme {
 
 fn tokyo_night() -> Theme {
     Theme {
+        background: Color::Rgb(0x1A, 0x1B, 0x26),         // bg_dark
+        text: Color::Rgb(0xA9, 0xB1, 0xD6),               // fg
         status_bar_view: Color::Rgb(0x7A, 0xA2, 0xF7),
         status_bar_source: Color::Rgb(0x9E, 0xCE, 0x6A),
         status_bar_select: Color::Rgb(0xFF, 0x9E, 0x64),
@@ -387,6 +407,8 @@ fn tokyo_night() -> Theme {
 
 fn gruvbox_dark() -> Theme {
     Theme {
+        background: Color::Rgb(0x28, 0x28, 0x28),         // bg0
+        text: Color::Rgb(0xEB, 0xDB, 0xB2),               // fg1
         status_bar_view: Color::Rgb(0x45, 0x85, 0x88),
         status_bar_source: Color::Rgb(0x98, 0x97, 0x1A),
         status_bar_select: Color::Rgb(0xD6, 0x5D, 0x0E),
@@ -426,6 +448,8 @@ fn gruvbox_dark() -> Theme {
 
 fn nord() -> Theme {
     Theme {
+        background: Color::Rgb(0x2E, 0x34, 0x40),         // nord0
+        text: Color::Rgb(0xEC, 0xEF, 0xF4),               // nord6
         status_bar_view: Color::Rgb(0x81, 0xA1, 0xC1),
         status_bar_source: Color::Rgb(0xA3, 0xBE, 0x8C),
         status_bar_select: Color::Rgb(0xD0, 0x87, 0x70),
@@ -513,6 +537,8 @@ macro_rules! override_color {
 impl Theme {
     /// Apply optional color overrides from config onto this theme.
     pub fn apply_overrides(&mut self, colors: &ColorsConfig) {
+        override_color!(self, colors, background);
+        override_color!(self, colors, text);
         override_color!(self, colors, status_bar_view);
         override_color!(self, colors, status_bar_source);
         override_color!(self, colors, status_bar_select);

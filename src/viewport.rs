@@ -505,6 +505,8 @@ impl Viewport {
         highlights: Vec<graphics::HighlightRange>,
         base_dir: &std::path::Path,
     ) -> DynamicImage {
+        let bg = Some(crate::theme::color_to_rgb(theme.background));
+
         match block {
             Block::Heading { level, spans, .. } => {
                 let text: String = spans.iter().map(|s| s.text.as_str()).collect();
@@ -515,13 +517,13 @@ impl Viewport {
                     italic: false,
                 }];
                 let links = Self::link_ranges_from_spans(spans, theme);
-                // Absorb heading_before as padding_top inside the image
                 let scale = level.font_scale();
                 let pad_top = (font_size * scale * 0.8) as u32;
                 let opts = RenderOptions {
                     font_size: font_size * scale,
                     line_height_factor: 1.15,
                     padding_top: pad_top,
+                    background: bg,
                     highlights,
                     links,
                     ..Default::default()
@@ -531,11 +533,14 @@ impl Viewport {
             Block::Paragraph { spans } => {
                 let styled = graphics::styled_spans_to_text_spans(spans, theme);
                 let links = Self::link_ranges_from_spans(spans, theme);
-                let pad_bottom = (font_size * 0.3) as u32;
+                let pad_top = (font_size * 0.2) as u32;
+                let pad_bottom = (font_size * 0.1) as u32;
                 let opts = RenderOptions {
                     font_size,
                     line_height_factor: 1.4,
+                    padding_top: pad_top,
                     padding_bottom: pad_bottom,
+                    background: bg,
                     highlights,
                     links,
                     ..Default::default()
