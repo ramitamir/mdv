@@ -556,9 +556,15 @@ impl TextRenderer {
         let code_h = code_img.height();
         let rect_w = inner_width;
         let rect_h = code_h;
+        let bg = crate::theme::color_to_rgb(theme.background);
         let mut pixels = vec![0u8; (width_px * code_h * 4) as usize];
 
-        // Draw rounded rectangle border (no fill)
+        // Fill entire image with theme background
+        for p in pixels.chunks_exact_mut(4) {
+            p[0] = bg[0]; p[1] = bg[1]; p[2] = bg[2]; p[3] = 255;
+        }
+
+        // Draw rounded rectangle with border
         let inner_w = rect_w.saturating_sub(border_w * 2);
         let inner_h = rect_h.saturating_sub(border_w * 2);
         let inner_r = radius.saturating_sub(border_w);
@@ -573,10 +579,10 @@ impl TextRenderer {
                     && x < border_w + inner_w && y < border_w + inner_h
                     && is_inside_rounded_rect(x - border_w, y - border_w, inner_w, inner_h, inner_r);
 
-                if !in_inner {
-                    let px = inset + x;
-                    let idx = ((y * width_px + px) * 4) as usize;
-                    if idx + 3 < pixels.len() {
+                let px = inset + x;
+                let idx = ((y * width_px + px) * 4) as usize;
+                if idx + 3 < pixels.len() {
+                    if !in_inner {
                         pixels[idx] = border_color[0];
                         pixels[idx + 1] = border_color[1];
                         pixels[idx + 2] = border_color[2];
