@@ -446,8 +446,13 @@ fn process_event(
                     let (block_idx, rel_x, rel_y) = mouse_to_block(mouse, *scroll_row, cell_h, margin_cols, cell_w, viewport);
 
                     if block_idx < blocks.len() {
-                        // Click — check for link first
-                        if let Some(url) = viewport.link_at_pixel(block_idx, rel_x, rel_y) {
+                        // Click — check for copy button first, then links
+                        if viewport.copy_button_at_pixel(block_idx, rel_x, rel_y) {
+                            if let Block::CodeBlock { code, .. } = &blocks[block_idx] {
+                                let _ = term.copy_to_clipboard(code);
+                                *status_msg = Some("Copied to clipboard".to_string());
+                            }
+                        } else if let Some(url) = viewport.link_at_pixel(block_idx, rel_x, rel_y) {
                             if let Some(anchor) = url.strip_prefix('#') {
                                 if let Some(target) = find_heading_by_slug(blocks, anchor) {
                                     let target_px = viewport.block_offsets[target];

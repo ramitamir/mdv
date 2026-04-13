@@ -22,6 +22,8 @@ pub struct Viewport {
     search_highlights: Vec<(usize, usize, usize, bool)>,
     /// Per-block link bounding boxes (populated during rendering)
     link_boxes: Vec<Vec<graphics::LinkBox>>,
+    /// Per-block copy button box (for code blocks)
+    copy_buttons: Vec<Option<graphics::CopyButton>>,
     /// Next block index to measure in background (all blocks before this are measured)
     pub next_unmeasured: usize,
     /// Set by ensure_block_rendered when a height correction occurs; cleared by caller
@@ -69,6 +71,7 @@ impl Viewport {
             base_dir,
             search_highlights: Vec::new(),
             link_boxes: vec![Vec::new(); blocks.len()],
+            copy_buttons: vec![None; blocks.len()],
             next_unmeasured: 0,
             height_corrected_at: None,
         }
@@ -121,9 +124,12 @@ impl Viewport {
                 &blocks[idx], &mut self.renderer, &self.highlighter,
                 self.width_px, self.font_size, theme, block_highlights, &self.base_dir,
             );
-            // Capture link bounding boxes from the render pass
+            // Capture link bounding boxes and copy button from the render pass
             if idx < self.link_boxes.len() {
                 self.link_boxes[idx] = std::mem::take(&mut self.renderer.last_link_boxes);
+            }
+            if idx < self.copy_buttons.len() {
+                self.copy_buttons[idx] = self.renderer.last_copy_button.take();
             }
             // Pad height to a multiple of cell_height — Kitty protocol
             // requires whole terminal rows for proper display
@@ -176,6 +182,15 @@ impl Viewport {
             if block_bottom < keep_start || block_top > keep_end {
                 self.block_cache[i] = None;
             }
+        }
+    }
+
+    /// Check if a pixel position hits a code block's copy button.
+    pub fn copy_button_at_pixel(&self, block_idx: usize, x: f32, y: f32) -> bool {
+        if let Some(Some(cb)) = self.copy_buttons.get(block_idx) {
+            x >= cb.x0 && x <= cb.x1 && y >= cb.y0 && y <= cb.y1
+        } else {
+            false
         }
     }
 
