@@ -604,18 +604,16 @@ impl TextRenderer {
             }
         }
 
-        // Render copy button icon in the top-right corner
-        let icon_text = "copy";
+        // Render copy button icon (⎘) in the bottom-right corner
         let icon_spans = vec![StyledTextSpan {
-            text: icon_text.to_string(),
+            text: "⎘".to_string(),
             color: border_color_rgb,
             bold: false, italic: false,
         }];
-        let icon_font_size = base_font_size * 0.7;
+        let icon_font_size = base_font_size * 0.9;
         let icon_opts = RenderOptions {
             font_size: icon_font_size,
             line_height_factor: 1.0,
-            use_code_font: true,
             ..Default::default()
         };
         let icon_result = self.render_styled_text(&icon_spans, inner_width, &icon_opts);
@@ -624,9 +622,9 @@ impl TextRenderer {
         let icon_data = icon_rgba.as_raw();
         let iw = icon_img.width();
         let ih = icon_img.height();
-        let icon_pad = (base_font_size * 0.5) as u32;
+        let icon_pad = (base_font_size * 0.4) as u32;
         let icon_x = inset + rect_w - iw - icon_pad;
-        let icon_y = icon_pad / 2;
+        let icon_y = code_h.saturating_sub(ih + icon_pad);
         for iy in 0..ih {
             for ix in 0..iw {
                 let src_idx = ((iy * iw + ix) * 4) as usize;
@@ -643,12 +641,13 @@ impl TextRenderer {
                 }
             }
         }
-        // Store copy button bounding box (relative to block image)
+        // Store copy button bounding box with generous click target
+        let click_pad = base_font_size as u32;
         self.last_copy_button = Some(CopyButton {
-            x0: icon_x as f32,
-            y0: icon_y as f32,
-            x1: (icon_x + iw) as f32,
-            y1: (icon_y + ih) as f32,
+            x0: icon_x.saturating_sub(click_pad) as f32,
+            y0: icon_y.saturating_sub(click_pad) as f32,
+            x1: (icon_x + iw + click_pad) as f32,
+            y1: (icon_y + ih + click_pad) as f32,
         });
 
         let img_buf: ImageBuffer<Rgba<u8>, Vec<u8>> =
