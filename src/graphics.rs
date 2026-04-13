@@ -604,50 +604,59 @@ impl TextRenderer {
             }
         }
 
-        // Render copy button icon (⎘) in the bottom-right corner
-        let icon_spans = vec![StyledTextSpan {
-            text: "⎘".to_string(),
-            color: border_color_rgb,
-            bold: false, italic: false,
-        }];
-        let icon_font_size = base_font_size * 0.9;
-        let icon_opts = RenderOptions {
-            font_size: icon_font_size,
-            line_height_factor: 1.0,
-            ..Default::default()
-        };
-        let icon_result = self.render_styled_text(&icon_spans, inner_width, &icon_opts);
-        let icon_img = icon_result.image;
-        let icon_rgba = icon_img.as_rgba8().expect("image is rgba8");
-        let icon_data = icon_rgba.as_raw();
-        let iw = icon_img.width();
-        let ih = icon_img.height();
-        let icon_pad = (base_font_size * 0.4) as u32;
-        let icon_x = inset + rect_w - iw - icon_pad;
-        let icon_y = code_h.saturating_sub(ih + icon_pad);
-        for iy in 0..ih {
-            for ix in 0..iw {
-                let src_idx = ((iy * iw + ix) * 4) as usize;
-                let dx = icon_x + ix;
-                let dy = icon_y + iy;
-                if dx < width_px && dy < code_h {
-                    let dst_idx = ((dy * width_px + dx) * 4) as usize;
-                    if src_idx + 3 < icon_data.len() && dst_idx + 3 < pixels.len() {
-                        let alpha = icon_data[src_idx + 3] as u32;
-                        if alpha > 0 {
-                            blend_pixel(&mut pixels[dst_idx..dst_idx+4], &icon_data[src_idx..src_idx+4], alpha);
+        // Draw copy icon (two overlapping rectangles) in the bottom-right corner
+        let icon_size = (base_font_size * 0.7) as u32;
+        let stroke = 2u32;
+        let offset = icon_size / 3; // overlap offset
+        let total_w = icon_size + offset;
+        let total_h = icon_size + offset;
+        let icon_margin = (base_font_size * 0.6) as u32;
+        let icon_x = inset + rect_w - total_w - icon_margin;
+        let icon_y = code_h.saturating_sub(total_h + icon_margin);
+        let ic = border_color_rgb;
+
+        // Back rectangle (bottom-right)
+        for y in offset..total_h {
+            for x in offset..total_w {
+                let on_border = x < offset + stroke || x >= total_w - stroke
+                    || y < offset + stroke || y >= total_h - stroke;
+                if on_border {
+                    let dx = icon_x + x;
+                    let dy = icon_y + y;
+                    if dx < width_px && dy < code_h {
+                        let idx = ((dy * width_px + dx) * 4) as usize;
+                        if idx + 3 < pixels.len() {
+                            pixels[idx] = ic[0]; pixels[idx+1] = ic[1]; pixels[idx+2] = ic[2]; pixels[idx+3] = 255;
                         }
                     }
                 }
             }
         }
+        // Front rectangle (top-left)
+        for y in 0..icon_size {
+            for x in 0..icon_size {
+                let on_border = x < stroke || x >= icon_size - stroke
+                    || y < stroke || y >= icon_size - stroke;
+                if on_border {
+                    let dx = icon_x + x;
+                    let dy = icon_y + y;
+                    if dx < width_px && dy < code_h {
+                        let idx = ((dy * width_px + dx) * 4) as usize;
+                        if idx + 3 < pixels.len() {
+                            pixels[idx] = ic[0]; pixels[idx+1] = ic[1]; pixels[idx+2] = ic[2]; pixels[idx+3] = 255;
+                        }
+                    }
+                }
+            }
+        }
+
         // Store copy button bounding box with generous click target
         let click_pad = base_font_size as u32;
         self.last_copy_button = Some(CopyButton {
             x0: icon_x.saturating_sub(click_pad) as f32,
             y0: icon_y.saturating_sub(click_pad) as f32,
-            x1: (icon_x + iw + click_pad) as f32,
-            y1: (icon_y + ih + click_pad) as f32,
+            x1: (icon_x + total_w + click_pad) as f32,
+            y1: (icon_y + total_h + click_pad) as f32,
         });
 
         let img_buf: ImageBuffer<Rgba<u8>, Vec<u8>> =
