@@ -59,11 +59,7 @@ pub fn run(mut blocks: Vec<Block>, raw_content: &str, filename: &str, theme: The
     let mut matches: Vec<SearchMatch> = Vec::new();
     let mut current_match: usize = 0;
 
-    // Set terminal background color from theme
-    {
-        let [r, g, b] = crate::theme::color_to_rgb(theme.background);
-        write!(term.stdout_mut(), "\x1b[48;2;{};{};{}m", r, g, b)?;
-    }
+    set_term_bg(&mut term, &theme)?;
 
     // Initial render
     redraw(
@@ -195,6 +191,7 @@ pub fn run(mut blocks: Vec<Block>, raw_content: &str, filename: &str, theme: The
                 let start_line = scroll_to_source_line(scroll_row, cell_h, &viewport, &blocks, &raw_content);
                 source_mode(&mut term, &mut viewport, &raw_content, filename, &theme, start_line, selecting)?;
                 // Return to rendered view
+                set_term_bg(&mut term, &theme)?;
                 term.delete_all_images()?;
                 transmitted.clear();
                 redraw(&mut term, &mut viewport, &blocks, &theme, &mut transmitted, scroll_row, cell_h, margin_cols)?;
@@ -225,6 +222,7 @@ pub fn run(mut blocks: Vec<Block>, raw_content: &str, filename: &str, theme: The
                     .status();
                 // Re-init terminal
                 term = Terminal::new()?;
+                set_term_bg(&mut term, &theme)?;
                 // Check editor result and show error or reload
                 let editor_err = match &editor_result {
                     Err(e) => Some(format!("failed to launch '{}': {}", editor, e)),
@@ -284,6 +282,7 @@ pub fn run(mut blocks: Vec<Block>, raw_content: &str, filename: &str, theme: The
                 continue;
             } else if key.code == KeyCode::Char('?') {
                 show_help(&mut term, &theme)?;
+                set_term_bg(&mut term, &theme)?;
                 term.delete_all_images()?;
                 transmitted.clear();
                 redraw(&mut term, &mut viewport, &blocks, &theme, &mut transmitted, scroll_row, cell_h, margin_cols)?;
@@ -639,6 +638,13 @@ fn evict_distant(
 }
 
 /// Image ID for a block chunk. Block i, chunk c → unique ID.
+/// Set the terminal default background color from the theme.
+fn set_term_bg(term: &mut Terminal, theme: &Theme) -> Result<()> {
+    let [r, g, b] = crate::theme::color_to_rgb(theme.background);
+    write!(term.stdout_mut(), "\x1b[48;2;{};{};{}m", r, g, b)?;
+    Ok(())
+}
+
 /// Chunk 0 covers rows 0..MAX_IMAGE_ROWS, chunk 1 covers MAX_IMAGE_ROWS..2*MAX_IMAGE_ROWS, etc.
 fn block_image_id(block_idx: usize, chunk: u32) -> u32 {
     (block_idx as u32 + 1) * 1000 + chunk
