@@ -485,10 +485,11 @@ fn process_event(
                     } else {
                         None
                     };
-                    let on_link = link.is_some();
-                    if on_link != *cursor_on_link {
-                        *cursor_on_link = on_link;
-                        if on_link {
+                    let on_copy = block_idx < blocks.len() && viewport.copy_button_at_pixel(block_idx, rel_x, rel_y);
+                    let on_clickable = link.is_some() || on_copy;
+                    if on_clickable != *cursor_on_link {
+                        *cursor_on_link = on_clickable;
+                        if on_clickable {
                             let _ = term.set_pointer_cursor();
                         } else {
                             let _ = term.set_default_cursor();

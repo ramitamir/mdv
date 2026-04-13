@@ -615,12 +615,20 @@ impl TextRenderer {
         let icon_y = code_h.saturating_sub(total_h + icon_margin);
         let ic = border_color_rgb;
 
-        // Back rectangle (bottom-right)
+        let icon_r = icon_size / 4; // corner radius
+        let inner_r = icon_r.saturating_sub(stroke);
+        let inner_sz = icon_size.saturating_sub(stroke * 2);
+
+        // Back rounded rectangle (bottom-right)
         for y in offset..total_h {
             for x in offset..total_w {
-                let on_border = x < offset + stroke || x >= total_w - stroke
-                    || y < offset + stroke || y >= total_h - stroke;
-                if on_border {
+                let lx = x - offset;
+                let ly = y - offset;
+                let in_outer = is_inside_rounded_rect(lx, ly, icon_size, icon_size, icon_r);
+                let in_inner = lx >= stroke && ly >= stroke
+                    && lx < stroke + inner_sz && ly < stroke + inner_sz
+                    && is_inside_rounded_rect(lx - stroke, ly - stroke, inner_sz, inner_sz, inner_r);
+                if in_outer && !in_inner {
                     let dx = icon_x + x;
                     let dy = icon_y + y;
                     if dx < width_px && dy < code_h {
@@ -632,12 +640,14 @@ impl TextRenderer {
                 }
             }
         }
-        // Front rectangle (top-left)
+        // Front rounded rectangle (top-left)
         for y in 0..icon_size {
             for x in 0..icon_size {
-                let on_border = x < stroke || x >= icon_size - stroke
-                    || y < stroke || y >= icon_size - stroke;
-                if on_border {
+                let in_outer = is_inside_rounded_rect(x, y, icon_size, icon_size, icon_r);
+                let in_inner = x >= stroke && y >= stroke
+                    && x < stroke + inner_sz && y < stroke + inner_sz
+                    && is_inside_rounded_rect(x - stroke, y - stroke, inner_sz, inner_sz, inner_r);
+                if in_outer && !in_inner {
                     let dx = icon_x + x;
                     let dy = icon_y + y;
                     if dx < width_px && dy < code_h {
