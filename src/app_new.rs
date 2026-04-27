@@ -1262,15 +1262,24 @@ fn source_mode(
             (usize::MAX, 0, 0, 0)
         };
 
+        // Keep cursor in view: if cur_r is above scroll, snap to it; otherwise
+        // step scroll forward until the cursor's wrapped segment is visible.
+        if cur_r < scroll { scroll = cur_r; }
+        let mut screen_map = build_screen_map(&lines, scroll, cols, content_rows);
+        loop {
+            let visible = screen_map.iter().any(|&(li, s, e)| li == cur_r && cur_c >= s && cur_c <= e);
+            if visible || scroll >= total_lines.saturating_sub(1) { break; }
+            scroll += 1;
+            screen_map = build_screen_map(&lines, scroll, cols, content_rows);
+        }
+
         crossterm::queue!(term.stdout_mut(), crossterm::cursor::MoveTo(0, 0))?;
         for screen_row in 0..content_rows {
-            let li = scroll + screen_row;
             crossterm::queue!(term.stdout_mut(), crossterm::cursor::MoveTo(0, screen_row as u16))?;
             write!(term.stdout_mut(), "\x1b[2K")?;
-            if li >= total_lines { continue; }
-
+            let Some(&(li, seg_start, seg_end)) = screen_map.get(screen_row) else { continue; };
             let chars: Vec<char> = lines[li].chars().collect();
-            for ci in 0..cols {
+            for ci in seg_start..seg_end {
                 let ch = chars.get(ci).copied().unwrap_or(' ');
                 let is_cursor = li == cur_r && ci == cur_c;
                 let is_sel = sel_active && li >= sr && li <= er && {
@@ -1287,6 +1296,13 @@ fn source_mode(
                     crossterm::queue!(term.stdout_mut(), ResetColor)?;
                 }
                 write!(term.stdout_mut(), "{}", ch)?;
+            }
+            // Cursor at end-of-line position falls just past seg_end on the
+            // last segment of its source line — paint it in the next column.
+            if li == cur_r && cur_c == seg_end && cur_c == chars.len() {
+                crossterm::queue!(term.stdout_mut(), SetBackgroundColor(cursor_bg), SetForegroundColor(cursor_fg))?;
+                write!(term.stdout_mut(), " ")?;
+                crossterm::queue!(term.stdout_mut(), ResetColor)?;
             }
         }
         crossterm::queue!(term.stdout_mut(), ResetColor)?;
@@ -1329,12 +1345,11 @@ fn source_mode(
         if let Event::Mouse(mouse) = &ev {
             match mouse.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
-                    let click_r = scroll + mouse.row as usize;
-                    let click_c = mouse.column as usize;
-                    if click_r < total_lines {
-                        let line_len = lines[click_r].chars().count();
-                        let cr = click_r;
-                        let cc = click_c.min(line_len);
+                    let screen_r = mouse.row as usize;
+                    if let Some(&(src_li, seg_start, _seg_end)) = screen_map.get(screen_r) {
+                        let line_len = lines[src_li].chars().count();
+                        let cr = src_li;
+                        let cc = (seg_start + mouse.column as usize).min(line_len);
 
                         if sel_active {
                             // Click within or near selection — adjust nearest endpoint
@@ -1366,21 +1381,19 @@ fn source_mode(
                 }
                 MouseEventKind::Drag(MouseButton::Left) => {
                     let cr = term.content_rows() as usize;
+                    let screen_r = mouse.row as usize;
                     if mouse.row == 0 && scroll > 0 {
                         scroll -= 1;
-                        cur_r = scroll;
-                    } else if mouse.row as usize >= cr.saturating_sub(1) && scroll + cr < total_lines {
+                        if cur_r > 0 { cur_r -= 1; }
+                    } else if screen_r >= cr.saturating_sub(1) && scroll + 1 < total_lines {
                         scroll += 1;
-                        cur_r = (scroll + cr - 1).min(total_lines.saturating_sub(1));
-                    } else {
-                        let drag_r = scroll + mouse.row as usize;
-                        if drag_r < total_lines {
-                            cur_r = drag_r;
-                        }
+                        if cur_r + 1 < total_lines { cur_r += 1; }
+                    } else if let Some(&(src_li, seg_start, _)) = screen_map.get(screen_r) {
+                        cur_r = src_li;
+                        cur_c = seg_start + mouse.column as usize;
                     }
-                    let drag_c = mouse.column as usize;
                     let line_len = lines.get(cur_r).map_or(0, |l| l.chars().count());
-                    cur_c = drag_c.min(line_len);
+                    cur_c = cur_c.min(line_len);
                 }
                 MouseEventKind::Up(MouseButton::Left) => {}
                 MouseEventKind::ScrollDown => {
@@ -1482,10 +1495,32 @@ fn source_mode(
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
                 _ => {}
             }
-            // Keep cursor in view
+            // Top edge: snap. Bottom edge handled by visibility loop in next draw.
             if cur_r < scroll { scroll = cur_r; }
-            else if cur_r >= scroll + content_rows { scroll = cur_r - content_rows + 1; }
         }
     }
     Ok(())
+}
+
+/// Build a per-screen-row mapping of (source_line, segment_start_char, segment_end_char)
+/// for source-mode rendering with line wrapping.
+fn build_screen_map(lines: &[&str], scroll: usize, cols: usize, content_rows: usize) -> Vec<(usize, usize, usize)> {
+    let mut out = Vec::with_capacity(content_rows);
+    if cols == 0 { return out; }
+    let mut li = scroll;
+    while out.len() < content_rows && li < lines.len() {
+        let chars_count = lines[li].chars().count();
+        if chars_count == 0 {
+            out.push((li, 0, 0));
+        } else {
+            let mut i = 0;
+            while i < chars_count && out.len() < content_rows {
+                let end = (i + cols).min(chars_count);
+                out.push((li, i, end));
+                i = end;
+            }
+        }
+        li += 1;
+    }
+    out
 }
