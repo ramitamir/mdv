@@ -682,6 +682,60 @@ impl TextRenderer {
     }
 
     /// Render a table with grid lines and cell text into a DynamicImage.
+    /// Compute per-row heights for a table by measuring each cell's wrapped text
+    /// at its column width. Row height is the max of its cells.
+    /// Returns (row_heights, total_height_px).
+    pub fn measure_table_layout(
+        &mut self,
+        headers: &[Vec<crate::blocks::StyledSpan>],
+        rows: &[Vec<Vec<crate::blocks::StyledSpan>>],
+        width_px: u32,
+        base_font_size: f32,
+    ) -> (Vec<u32>, u32) {
+        let num_cols = headers.len().max(1);
+        let col_width_px = width_px / num_cols as u32;
+        let cell_pad = (base_font_size * 0.5) as u32;
+        let line_height_min = (base_font_size * 1.4).ceil() as u32;
+        let min_row_h = line_height_min + cell_pad * 2;
+        let cell_width = col_width_px.saturating_sub(cell_pad * 2);
+
+        let all_rows: Vec<&[Vec<crate::blocks::StyledSpan>]> = std::iter::once(headers)
+            .chain(rows.iter().map(|r| r.as_slice()))
+            .collect();
+
+        let mut row_heights = Vec::with_capacity(all_rows.len());
+        for (row_idx, row_cells) in all_rows.iter().enumerate() {
+            let is_header = row_idx == 0;
+            let mut max_h = min_row_h;
+            for cell in row_cells.iter() {
+                let cell_text: String = cell.iter().map(|s| s.text.as_str()).collect();
+                if cell_text.is_empty() { continue; }
+                let cell_spans = vec![StyledTextSpan {
+                    text: cell_text,
+                    color: [0, 0, 0],
+                    bold: is_header,
+                    italic: false,
+                }];
+                let opts = RenderOptions {
+                    font_size: base_font_size,
+                    line_height_factor: 1.3,
+                    padding_left: cell_pad,
+                    padding_top: cell_pad,
+                    padding_bottom: cell_pad,
+                    ..Default::default()
+                };
+                let h = self.measure_text_height(&cell_spans, cell_width, &opts);
+                if h > max_h { max_h = h; }
+            }
+            row_heights.push(max_h);
+        }
+
+        let grid_line = TABLE_GRID_LINE;
+        let total_h: u32 = row_heights.iter().sum::<u32>()
+            + grid_line * (row_heights.len() as u32 + 1);
+        (row_heights, total_h)
+    }
+
     pub fn render_table(
         &mut self,
         headers: &[Vec<crate::blocks::StyledSpan>],
@@ -693,21 +747,27 @@ impl TextRenderer {
     ) -> DynamicImage {
         let num_cols = headers.len().max(1);
         let col_width_px = width_px / num_cols as u32;
-        let line_height = (base_font_size * 1.4).ceil();
         let cell_pad = (base_font_size * 0.5) as u32;
-        let row_height = line_height as u32 + cell_pad * 2;
-        let grid_line = 2u32;
-        let total_data_rows = 1 + rows.len(); // header + data
-        let height_px =
-            total_data_rows as u32 * row_height + (total_data_rows as u32 + 1) * grid_line;
+        let grid_line = TABLE_GRID_LINE;
+
+        let (row_heights, height_px) =
+            self.measure_table_layout(headers, rows, width_px, base_font_size);
+
+        // Cumulative y-offset for the start of each row (top grid line).
+        let mut row_y_starts: Vec<u32> = Vec::with_capacity(row_heights.len() + 1);
+        let mut acc = 0u32;
+        for &rh in &row_heights {
+            row_y_starts.push(acc);
+            acc += rh + grid_line;
+        }
+        row_y_starts.push(acc); // bottom grid line position
 
         let mut pixels = vec![0u8; (width_px * height_px * 4) as usize];
         let grid_color = crate::theme::color_to_rgb(theme.table_border);
         let body_color = crate::theme::color_to_rgb(theme.text);
 
-        // Draw horizontal grid lines
-        for row_idx in 0..=total_data_rows {
-            let y_start = row_idx as u32 * (row_height + grid_line);
+        // Draw horizontal grid lines between rows (and at top/bottom).
+        for &y_start in &row_y_starts {
             for dy in 0..grid_line {
                 let y = y_start + dy;
                 if y < height_px {
@@ -785,7 +845,7 @@ impl TextRenderer {
                 let cell_img = self.render_styled_text(&cell_spans, cell_width, &cell_opts).image;
 
                 let dest_x = col_idx as u32 * col_width_px + grid_line;
-                let dest_y = row_idx as u32 * (row_height + grid_line) + grid_line;
+                let dest_y = row_y_starts[row_idx] + grid_line;
                 image::imageops::overlay(&mut img, &cell_img, dest_x as i64, dest_y as i64);
             }
         }
@@ -794,6 +854,8 @@ impl TextRenderer {
     }
 
 }
+
+const TABLE_GRID_LINE: u32 = 2;
 
 /// Check if a point (x, y) is inside a rounded rectangle of size (w, h) with corner radius r.
 fn is_inside_rounded_rect(x: u32, y: u32, w: u32, h: u32, r: u32) -> bool {

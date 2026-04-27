@@ -410,10 +410,10 @@ impl Viewport {
                 }
                 h
             }
-            Block::Table { rows, .. } => {
-                let line_height = (font_size * 1.4).ceil();
-                let row_h = (line_height as u32) + 9;
-                (1 + rows.len() as u32) * row_h + (2 + rows.len() as u32)
+            Block::Table { headers, rows } => {
+                let (_row_heights, total_h) =
+                    self.renderer.measure_table_layout(headers, rows, width_px, font_size);
+                total_h
             }
             Block::Image { .. } => (font_size * 10.0) as u32,
             Block::ThematicBreak => self.cell_height,

@@ -203,5 +203,15 @@ fn detect_cell_size() -> (u16, u16) {
             return (ws.width / ws.columns, ws.height / ws.rows);
         }
     }
+    // Warn once: fallback dimensions will desync image alignment with text cells.
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        eprintln!(
+            "mdv: warning — terminal did not report pixel dimensions; \
+             falling back to 10x20 cell size. Image alignment may be off. \
+             Try a graphics-capable terminal (Ghostty, Kitty, WezTerm)."
+        );
+    }
     (10, 20)
 }
