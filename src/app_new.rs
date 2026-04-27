@@ -959,6 +959,27 @@ fn draw_status_image(
     fill_bg: [u8; 3],
 ) -> Result<()> {
     let height = (term.cell_height as f32 * 1.4) as u32; // taller than one cell
+    let width = term.cols as u32 * term.cell_width as u32;
+    let fp = status_fingerprint(left, right, fill_bg, width, height);
+
+    if let Some((cached_fp, cached_rows)) = term.status_cache() {
+        if cached_fp == fp {
+            // Inputs unchanged — just re-emit the placeholder rows referencing
+            // the already-transmitted image. Skips cosmic-text layout, pixel
+            // compositing, PNG encoding, and Kitty transmission.
+            let status_row = term.content_rows();
+            let cols = term.cols;
+            crossterm::queue!(term.stdout_mut(), crossterm::cursor::MoveTo(0, status_row))?;
+            term.print_placeholder_row(STATUS_IMAGE_ID, 0, cols)?;
+            if cached_rows > 1 && status_row + 1 < term.rows {
+                crossterm::queue!(term.stdout_mut(), crossterm::cursor::MoveTo(0, status_row + 1))?;
+                term.print_placeholder_row(STATUS_IMAGE_ID, 1, cols)?;
+            }
+            term.flush()?;
+            return Ok(());
+        }
+    }
+
     let img = viewport.render_status_bar(left, right, fill_bg, height);
     let rgba = img.as_rgba8().expect("image is rgba8");
     // Delete previous status bar image
@@ -976,7 +997,22 @@ fn draw_status_image(
         term.print_placeholder_row(STATUS_IMAGE_ID, 1, cols)?;
     }
     term.flush()?;
+    term.set_status_cache(fp, img_rows);
     Ok(())
+}
+
+fn status_fingerprint(left: &[StatusPane], right: &[StatusPane], fill_bg: [u8; 3], width: u32, height: u32) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    left.len().hash(&mut h);
+    for p in left { p.hash(&mut h); }
+    right.len().hash(&mut h);
+    for p in right { p.hash(&mut h); }
+    fill_bg.hash(&mut h);
+    width.hash(&mut h);
+    height.hash(&mut h);
+    h.finish()
 }
 
 /// Map the rendered viewport scroll position to a source line number.

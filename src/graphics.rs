@@ -95,6 +95,7 @@ pub struct RenderResult {
 }
 
 /// A status bar pane specification.
+#[derive(Hash, PartialEq, Eq)]
 pub struct StatusPane {
     pub text: String,
     pub bg: [u8; 3],
