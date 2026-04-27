@@ -532,7 +532,7 @@ impl TextRenderer {
         };
 
         let border_color = border_color_rgb;
-        let radius: u32 = 20;
+        let radius: u32 = 5;
         let border_w: u32 = 2;
         let inset = (base_font_size * 2.0) as u32;
         let padding = (base_font_size * 0.8) as u32;
@@ -621,7 +621,7 @@ impl TextRenderer {
         let icon_y = code_h.saturating_sub(total_h + icon_margin);
         let ic = border_color_rgb;
 
-        let icon_r = icon_size / 4; // corner radius
+        let icon_r = icon_size / 12; // corner radius
         let inner_r = icon_r.saturating_sub(stroke);
         let inner_sz = icon_size.saturating_sub(stroke * 2);
 
