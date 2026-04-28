@@ -135,6 +135,54 @@ impl TextRenderer {
 
     /// Render rich styled text into a pixel image + retained Buffer for hit-testing.
     /// Measure text height via cosmic-text layout without rasterization.
+    /// Measure the natural (unwrapped) width of `spans` in pixels.
+    /// Shapes the text against an effectively-unbounded width and returns
+    /// the maximum laid-out line width.
+    pub fn measure_text_natural_width(
+        &mut self,
+        spans: &[StyledTextSpan],
+        opts: &RenderOptions,
+    ) -> u32 {
+        let font_size = opts.font_size;
+        let line_height = (font_size * opts.line_height_factor).ceil();
+        let metrics = Metrics::new(font_size, line_height);
+        let mut buffer = Buffer::new(&mut self.font_system, metrics);
+        let active_font = if opts.use_code_font { &self.code_font_family } else { &self.font_family };
+
+        {
+            let mut borrowed = buffer.borrow_with(&mut self.font_system);
+            borrowed.set_size(Some(1_000_000.0), None);
+
+            let rich: Vec<(&str, Attrs)> = spans
+                .iter()
+                .map(|s| {
+                    let mut attrs = Attrs::new()
+                        .family(Family::Name(active_font))
+                        .color(Color::rgb(s.color[0], s.color[1], s.color[2]));
+                    if s.bold {
+                        attrs = attrs.weight(Weight::BOLD);
+                    }
+                    if s.italic {
+                        attrs = attrs.style(Style::Italic);
+                    }
+                    (s.text.as_str(), attrs)
+                })
+                .collect();
+
+            let default_attrs = Attrs::new().family(Family::Name(active_font));
+            borrowed.set_rich_text(rich, &default_attrs, Shaping::Advanced, Some(Align::Left));
+            borrowed.shape_until_scroll(true);
+        }
+
+        let mut max_w: f32 = 0.0;
+        for run in buffer.layout_runs() {
+            if run.line_w > max_w {
+                max_w = run.line_w;
+            }
+        }
+        max_w.ceil() as u32
+    }
+
     pub fn measure_text_height(
         &mut self,
         spans: &[StyledTextSpan],
@@ -699,6 +747,151 @@ impl TextRenderer {
         (DynamicImage::ImageRgba8(img_buf), code_buffer)
     }
 
+    /// Compute per-column slot widths summing to `width_px` based on each
+    /// column's natural (unwrapped) content width. Falls back to equal widths
+    /// when content has no natural width signal. Enforces a minimum slot width
+    /// so narrow viewports never collapse a column to nothing.
+    pub fn compute_column_widths(
+        &mut self,
+        headers: &[Vec<crate::blocks::StyledSpan>],
+        rows: &[Vec<Vec<crate::blocks::StyledSpan>>],
+        width_px: u32,
+        base_font_size: f32,
+    ) -> Vec<u32> {
+        let num_cols = headers.len().max(1);
+        if num_cols == 0 || width_px == 0 {
+            return vec![];
+        }
+        let cell_pad = (base_font_size * 0.5) as u32;
+        // Slot overhead: cell image inset (2*cell_pad on the column slot) plus
+        // padding_left inside the cell image. Matches render_table layout.
+        let slot_overhead = cell_pad * 3;
+        let min_text_w = (base_font_size * 3.0) as u32;
+        let min_slot = (min_text_w + slot_overhead).min(width_px / num_cols as u32);
+
+        let all_rows: Vec<&[Vec<crate::blocks::StyledSpan>]> = std::iter::once(headers)
+            .chain(rows.iter().map(|r| r.as_slice()))
+            .collect();
+
+        let mut natural: Vec<u32> = vec![0; num_cols];
+        for (row_idx, row_cells) in all_rows.iter().enumerate() {
+            let is_header = row_idx == 0;
+            for (col_idx, cell) in row_cells.iter().take(num_cols).enumerate() {
+                let cell_text: String = cell.iter().map(|s| s.text.as_str()).collect();
+                if cell_text.is_empty() {
+                    continue;
+                }
+                let cell_spans = vec![StyledTextSpan {
+                    text: cell_text,
+                    color: [0, 0, 0],
+                    bold: is_header,
+                    italic: false,
+                }];
+                let opts = RenderOptions {
+                    font_size: base_font_size,
+                    line_height_factor: 1.3,
+                    ..Default::default()
+                };
+                let w = self.measure_text_natural_width(&cell_spans, &opts);
+                let slot_w = w + slot_overhead;
+                if slot_w > natural[col_idx] {
+                    natural[col_idx] = slot_w;
+                }
+            }
+        }
+
+        let total_natural: u32 = natural.iter().sum();
+        let target = width_px as f64;
+
+        let mut widths: Vec<f64> = vec![0.0; num_cols];
+
+        if total_natural == 0 {
+            widths = vec![target / num_cols as f64; num_cols];
+        } else if total_natural <= width_px {
+            // Everything fits unwrapped: keep natural widths and donate the
+            // slack to the widest column so narrow columns stay narrow.
+            for (i, &n) in natural.iter().enumerate() {
+                widths[i] = n as f64;
+            }
+            let widest = (0..num_cols).max_by_key(|&i| natural[i]).unwrap_or(0);
+            widths[widest] += (width_px - total_natural) as f64;
+        } else {
+            // Fair-share allocation: any column at or below its equal share
+            // gets its natural width; the remainder is split among the
+            // remaining (over-share) columns proportionally to their naturals.
+            // Iterate so that newly-revealed slack is absorbed by the next
+            // tier of columns.
+            let mut settled = vec![false; num_cols];
+            let mut remaining_target = target;
+            loop {
+                let unsettled: Vec<usize> =
+                    (0..num_cols).filter(|&i| !settled[i]).collect();
+                if unsettled.is_empty() {
+                    break;
+                }
+                let share = remaining_target / unsettled.len() as f64;
+                let mut newly_settled = false;
+                for &i in &unsettled {
+                    if (natural[i] as f64) <= share {
+                        widths[i] = natural[i] as f64;
+                        remaining_target -= widths[i];
+                        settled[i] = true;
+                        newly_settled = true;
+                    }
+                }
+                if !newly_settled {
+                    // No column fits within its share: distribute the
+                    // remaining_target among the unsettled columns
+                    // proportionally to their natural widths.
+                    let nat_sum: f64 =
+                        unsettled.iter().map(|&i| natural[i] as f64).sum();
+                    for &i in &unsettled {
+                        widths[i] = remaining_target * (natural[i] as f64)
+                            / nat_sum.max(1.0);
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Safety floor: only kicks in when a column's *natural* width is
+        // below min_slot (very narrow content on a narrow viewport).
+        for _ in 0..num_cols {
+            let mut deficit = 0.0;
+            let mut donor_excess = 0.0;
+            for w in widths.iter() {
+                if *w < min_slot as f64 {
+                    deficit += min_slot as f64 - *w;
+                } else {
+                    donor_excess += *w - min_slot as f64;
+                }
+            }
+            if deficit <= 0.0 || donor_excess <= 0.0 {
+                break;
+            }
+            let scale = ((donor_excess - deficit) / donor_excess).max(0.0);
+            for w in widths.iter_mut() {
+                if *w < min_slot as f64 {
+                    *w = min_slot as f64;
+                } else {
+                    *w = min_slot as f64 + (*w - min_slot as f64) * scale;
+                }
+            }
+        }
+
+        // Round to u32 and reconcile rounding drift against the widest column.
+        let mut result: Vec<u32> = widths.iter().map(|&w| w.round() as u32).collect();
+        let actual: u32 = result.iter().sum();
+        let widest = (0..num_cols).max_by_key(|&i| result[i]).unwrap_or(0);
+        if actual < width_px {
+            result[widest] += width_px - actual;
+        } else if actual > width_px {
+            let over = actual - width_px;
+            result[widest] = result[widest].saturating_sub(over);
+        }
+        result
+    }
+
     /// Render a table with grid lines and cell text into a DynamicImage.
     /// Compute per-row heights for a table by measuring each cell's wrapped text
     /// at its column width. Row height is the max of its cells.
@@ -710,12 +903,10 @@ impl TextRenderer {
         width_px: u32,
         base_font_size: f32,
     ) -> (Vec<u32>, u32) {
-        let num_cols = headers.len().max(1);
-        let col_width_px = width_px / num_cols as u32;
+        let col_widths = self.compute_column_widths(headers, rows, width_px, base_font_size);
         let cell_pad = (base_font_size * 0.5) as u32;
         let line_height_min = (base_font_size * 1.4).ceil() as u32;
         let min_row_h = line_height_min + cell_pad * 2;
-        let cell_width = col_width_px.saturating_sub(cell_pad * 2);
 
         let all_rows: Vec<&[Vec<crate::blocks::StyledSpan>]> = std::iter::once(headers)
             .chain(rows.iter().map(|r| r.as_slice()))
@@ -725,7 +916,7 @@ impl TextRenderer {
         for (row_idx, row_cells) in all_rows.iter().enumerate() {
             let is_header = row_idx == 0;
             let mut max_h = min_row_h;
-            for cell in row_cells.iter() {
+            for (col_idx, cell) in row_cells.iter().take(col_widths.len()).enumerate() {
                 let cell_text: String = cell.iter().map(|s| s.text.as_str()).collect();
                 if cell_text.is_empty() { continue; }
                 let cell_spans = vec![StyledTextSpan {
@@ -742,6 +933,7 @@ impl TextRenderer {
                     padding_bottom: cell_pad,
                     ..Default::default()
                 };
+                let cell_width = col_widths[col_idx].saturating_sub(cell_pad * 2);
                 let h = self.measure_text_height(&cell_spans, cell_width, &opts);
                 if h > max_h { max_h = h; }
             }
@@ -763,8 +955,15 @@ impl TextRenderer {
         theme: &crate::theme::Theme,
         cell_highlights: Vec<Vec<Vec<HighlightRange>>>,
     ) -> DynamicImage {
-        let num_cols = headers.len().max(1);
-        let col_width_px = width_px / num_cols as u32;
+        let col_widths = self.compute_column_widths(headers, rows, width_px, base_font_size);
+        let num_cols = col_widths.len().max(1);
+        let mut col_x_starts: Vec<u32> = Vec::with_capacity(num_cols + 1);
+        let mut acc_x = 0u32;
+        for &cw in &col_widths {
+            col_x_starts.push(acc_x);
+            acc_x += cw;
+        }
+        col_x_starts.push(acc_x); // = width_px (post rounding reconcile)
         let cell_pad = (base_font_size * 0.5) as u32;
         let grid_line = TABLE_GRID_LINE;
 
@@ -809,9 +1008,9 @@ impl TextRenderer {
             }
         }
 
-        // Draw vertical grid lines
+        // Draw vertical grid lines at cumulative column boundaries.
         for col_idx in 0..=num_cols {
-            let x_start = (col_idx as u32 * col_width_px).min(width_px.saturating_sub(grid_line));
+            let x_start = col_x_starts[col_idx].min(width_px.saturating_sub(grid_line));
             for dx in 0..grid_line {
                 let x = x_start + dx;
                 if x < width_px {
@@ -853,7 +1052,11 @@ impl TextRenderer {
                     italic: false,
                 }];
 
-                let cell_width = col_width_px.saturating_sub(cell_pad * 2);
+                let cell_width = col_widths
+                    .get(col_idx)
+                    .copied()
+                    .unwrap_or(0)
+                    .saturating_sub(cell_pad * 2);
                 let cell_hl = cell_highlights.get(row_idx)
                     .and_then(|r| r.get(col_idx))
                     .cloned()
@@ -870,7 +1073,7 @@ impl TextRenderer {
                 };
                 let cell_img = self.render_styled_text(&cell_spans, cell_width, &cell_opts).image;
 
-                let dest_x = col_idx as u32 * col_width_px + grid_line;
+                let dest_x = col_x_starts[col_idx] + grid_line;
                 let dest_y = row_y_starts[row_idx] + grid_line;
                 image::imageops::overlay(&mut img, &cell_img, dest_x as i64, dest_y as i64);
             }
