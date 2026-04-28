@@ -470,7 +470,12 @@ impl Viewport {
             color: crate::theme::color_to_rgb(theme.inline_code),
             bold: false, italic: true,
         }];
-        let opts = graphics::RenderOptions { font_size, line_height_factor: 1.4, ..Default::default() };
+        let opts = graphics::RenderOptions {
+            font_size,
+            line_height_factor: 1.4,
+            background: Some(crate::theme::color_to_rgb(theme.background)),
+            ..Default::default()
+        };
         renderer.render_styled_text(&spans, width_px, &opts).image
     }
 
@@ -687,7 +692,12 @@ impl Viewport {
                         color: crate::theme::color_to_rgb(theme.list_bullet),
                         bold: false, italic: false,
                     }];
-                    let bullet_opts = RenderOptions { font_size, line_height_factor: 1.4, ..Default::default() };
+                    let bullet_opts = RenderOptions {
+                        font_size,
+                        line_height_factor: 1.4,
+                        background: Some(crate::theme::color_to_rgb(theme.background)),
+                        ..Default::default()
+                    };
                     let bullet_img = renderer.render_styled_text(&bullet_spans, bullet_indent, &bullet_opts).image;
 
                     // Render item text with padding_left for wrapped lines
@@ -707,6 +717,7 @@ impl Viewport {
                         line_height_factor: 1.4,
                         padding_left: bullet_indent,
                         padding_bottom: pad_bottom,
+                        background: Some(crate::theme::color_to_rgb(theme.background)),
                         highlights: item_highlights,
                         links: item_links,
                         ..Default::default()
@@ -777,6 +788,12 @@ impl Viewport {
                         let ch = child_img.height();
                         let cw = child_img.width();
                         let mut child_pixels = vec![0u8; (width_px * ch * 4) as usize];
+                        // Fill the left gutter (bullet column) with theme background
+                        // so nested children don't leak transparent black.
+                        let gutter_bg = crate::theme::color_to_rgb(theme.background);
+                        for p in child_pixels.chunks_exact_mut(4) {
+                            p[0] = gutter_bg[0]; p[1] = gutter_bg[1]; p[2] = gutter_bg[2]; p[3] = 255;
+                        }
                         let child_rgba = child_img.as_rgba8().expect("image is rgba8");
                         let child_data = child_rgba.as_raw();
                         for y in 0..ch {
@@ -906,8 +923,14 @@ impl Viewport {
                         }
                         let scaled = img.resize_exact(final_w, final_h, image::imageops::FilterType::Triangle);
 
-                        // Place on full-width canvas for consistent placeholder rendering
+                        // Place on full-width canvas for consistent placeholder rendering.
+                        // Fill with theme background so any horizontal padding around
+                        // narrower images doesn't appear as a transparent/black strip.
                         let mut canvas = vec![0u8; (width_px * final_h * 4) as usize];
+                        let canvas_bg = crate::theme::color_to_rgb(theme.background);
+                        for p in canvas.chunks_exact_mut(4) {
+                            p[0] = canvas_bg[0]; p[1] = canvas_bg[1]; p[2] = canvas_bg[2]; p[3] = 255;
+                        }
                         let src = scaled.to_rgba8();
                         let src_data = src.as_raw();
                         for y in 0..final_h {

@@ -540,13 +540,15 @@ impl TextRenderer {
 
         let inner_width = width_px.saturating_sub(inset * 2);
 
-        // Render code text
+        // Render code text on theme background so glyph anti-aliasing blends
+        // against the same color the surrounding code block buffer uses.
         let code_opts = RenderOptions {
             font_size: base_font_size,
             line_height_factor: 1.3,
             padding_left: padding,
             padding_top: padding / 2,
             padding_bottom: padding,
+            background: Some(crate::theme::color_to_rgb(theme.background)),
             highlights,
             use_code_font: true,
             ..Default::default()
@@ -565,35 +567,9 @@ impl TextRenderer {
             p[0] = bg[0]; p[1] = bg[1]; p[2] = bg[2]; p[3] = 255;
         }
 
-        // Draw rounded rectangle with border
-        let inner_w = rect_w.saturating_sub(border_w * 2);
-        let inner_h = rect_h.saturating_sub(border_w * 2);
-        let inner_r = radius.saturating_sub(border_w);
-
-        for y in 0..rect_h {
-            for x in 0..rect_w {
-                if !is_inside_rounded_rect(x, y, rect_w, rect_h, radius) {
-                    continue;
-                }
-
-                let in_inner = x >= border_w && y >= border_w
-                    && x < border_w + inner_w && y < border_w + inner_h
-                    && is_inside_rounded_rect(x - border_w, y - border_w, inner_w, inner_h, inner_r);
-
-                let px = inset + x;
-                let idx = ((y * width_px + px) * 4) as usize;
-                if idx + 3 < pixels.len() {
-                    if !in_inner {
-                        pixels[idx] = border_color[0];
-                        pixels[idx + 1] = border_color[1];
-                        pixels[idx + 2] = border_color[2];
-                        pixels[idx + 3] = 255;
-                    }
-                }
-            }
-        }
-
-        // Composite code text
+        // Composite code text first (its image is theme-bg-filled, so the
+        // composite covers the entire interior with text-on-bg pixels). The
+        // border is drawn afterward so it isn't overwritten.
         let code_rgba = code_img.as_rgba8().expect("image is rgba8");
         let code_data = code_rgba.as_raw();
         for cy in 0..code_h {
@@ -607,6 +583,47 @@ impl TextRenderer {
                     if alpha > 0 {
                         blend_pixel(&mut pixels[dst_idx..dst_idx+4], &code_data[src_idx..src_idx+4], alpha);
                     }
+                }
+            }
+        }
+
+        // Draw rounded rectangle border on top of the composited text. The
+        // border is only `border_w` thick at the rounded edge, well outside
+        // any actual code padding, so no glyphs are clipped. Corners outside
+        // the rounded shape are left as theme bg to preserve the rounded look.
+        let inner_w = rect_w.saturating_sub(border_w * 2);
+        let inner_h = rect_h.saturating_sub(border_w * 2);
+        let inner_r = radius.saturating_sub(border_w);
+
+        for y in 0..rect_h {
+            for x in 0..rect_w {
+                if !is_inside_rounded_rect(x, y, rect_w, rect_h, radius) {
+                    // Outside the rounded shape — restore theme bg so the
+                    // composite step's corner pixels don't form sharp corners.
+                    let px = inset + x;
+                    let idx = ((y * width_px + px) * 4) as usize;
+                    if idx + 3 < pixels.len() {
+                        pixels[idx] = bg[0];
+                        pixels[idx + 1] = bg[1];
+                        pixels[idx + 2] = bg[2];
+                        pixels[idx + 3] = 255;
+                    }
+                    continue;
+                }
+
+                let in_inner = x >= border_w && y >= border_w
+                    && x < border_w + inner_w && y < border_w + inner_h
+                    && is_inside_rounded_rect(x - border_w, y - border_w, inner_w, inner_h, inner_r);
+
+                if in_inner { continue; }
+
+                let px = inset + x;
+                let idx = ((y * width_px + px) * 4) as usize;
+                if idx + 3 < pixels.len() {
+                    pixels[idx] = border_color[0];
+                    pixels[idx + 1] = border_color[1];
+                    pixels[idx + 2] = border_color[2];
+                    pixels[idx + 3] = 255;
                 }
             }
         }
@@ -766,6 +783,13 @@ impl TextRenderer {
         let mut pixels = vec![0u8; (width_px * height_px * 4) as usize];
         let grid_color = crate::theme::color_to_rgb(theme.table_border);
         let body_color = crate::theme::color_to_rgb(theme.text);
+        let table_bg = crate::theme::color_to_rgb(theme.background);
+
+        // Fill the entire table buffer with theme background so cell-image
+        // overlays land on the same color the cells were rendered against.
+        for p in pixels.chunks_exact_mut(4) {
+            p[0] = table_bg[0]; p[1] = table_bg[1]; p[2] = table_bg[2]; p[3] = 255;
+        }
 
         // Draw horizontal grid lines between rows (and at top/bottom).
         for &y_start in &row_y_starts {
@@ -840,6 +864,7 @@ impl TextRenderer {
                     padding_left: cell_pad,
                     padding_top: cell_pad,
                     padding_bottom: cell_pad,
+                    background: Some(table_bg),
                     highlights: cell_hl,
                     ..Default::default()
                 };
