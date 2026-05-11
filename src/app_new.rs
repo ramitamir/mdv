@@ -68,6 +68,8 @@ pub fn run(mut blocks: Vec<Block>, raw_content: &str, filename: &str, theme: The
     )?;
     draw_status(&mut term, &mut viewport, filename, scroll_row, &theme, hover_url.as_deref())?;
 
+    let mut last_event_at = std::time::Instant::now();
+
     loop {
         // Background measurement during idle time
         if viewport.has_unmeasured(blocks.len()) {
@@ -90,16 +92,62 @@ pub fn run(mut blocks: Vec<Block>, raw_content: &str, filename: &str, theme: The
         let content_rows = term.content_rows() as u32;
         let max_scroll = total_rows.saturating_sub(content_rows);
 
-        // Poll for input — short timeout if still measuring, block forever if done
-        let timeout = if viewport.has_unmeasured(blocks.len()) {
+        // Defensive: if a height correction (from any path) shrank the doc, the
+        // user's scroll may now point past the end. Clamp and force a redraw so
+        // the viewport refills instead of showing all-blank rows.
+        if scroll_row > max_scroll {
+            scroll_row = max_scroll;
+            redraw(&mut term, &mut viewport, &blocks, &theme,
+                   &mut transmitted, scroll_row, cell_h, margin_cols)?;
+            draw_status(&mut term, &mut viewport, filename, scroll_row, &theme, hover_url.as_deref())?;
+        }
+
+        // Poll for input. If user has been idle, do background prefetch.
+        let idle_ms = last_event_at.elapsed().as_millis();
+        let scroll_px = scroll_row * cell_h as u32;
+        let vp_px = term.content_height_px();
+        let prefetch_ready = idle_ms >= 100
+            && next_prefetch_block(&viewport, &transmitted, scroll_px, vp_px).is_some();
+
+        let timeout = if prefetch_ready {
+            Duration::from_millis(50)
+        } else if viewport.has_unmeasured(blocks.len()) {
             Duration::from_millis(10)
         } else {
             Duration::from_secs(3600)
         };
         if !event::poll(timeout)? {
-            continue; // timeout — go back to measure more blocks
+            // Timeout fired. Prefetch one adjacent block if idle long enough.
+            if idle_ms >= 100 {
+                if let Some(idx) = next_prefetch_block(&viewport, &transmitted, scroll_px, vp_px) {
+                    let img = viewport.ensure_block_rendered(idx, &blocks, &theme);
+                    let rgba = img.as_rgba8().expect("rgba8");
+                    transmit_block_image(&mut term, idx, rgba.as_raw(), img.width(), img.height(), cell_h)?;
+                    transmitted.insert(idx);
+
+                    // If rendering revealed the estimated height was wrong, the safety
+                    // net invalidates blocks below this one. Force a redraw so the screen
+                    // reflects new positions (otherwise visible-but-invalidated blocks
+                    // appear blank on next scroll).
+                    if let Some(corrected_idx) = viewport.height_corrected_at.take() {
+                        for j in (corrected_idx + 1)..blocks.len() {
+                            if transmitted.remove(&j) {
+                                for c in 0..20 { let _ = term.delete_image(block_image_id(j, c)); }
+                            }
+                        }
+                        let new_max = pixel_to_rows(viewport.total_height, cell_h)
+                            .saturating_sub(term.content_rows() as u32);
+                        scroll_row = scroll_row.min(new_max);
+                        redraw(&mut term, &mut viewport, &blocks, &theme,
+                               &mut transmitted, scroll_row, cell_h, margin_cols)?;
+                        draw_status(&mut term, &mut viewport, filename, scroll_row, &theme, hover_url.as_deref())?;
+                    }
+                }
+            }
+            continue;
         }
         let first = event::read()?;
+        last_event_at = std::time::Instant::now();
         let mut quit = false;
         let mut changed = false;
         let mut status_msg: Option<String> = None;
@@ -547,24 +595,40 @@ fn redraw(
     let viewport_px = content_rows as u32 * ch;
     let scroll_end = scroll_px + viewport_px;
 
-    // Render + transmit visible blocks (single pass with binary search)
-    let first = viewport.block_offsets
-        .partition_point(|&off| off < scroll_px)
-        .saturating_sub(1);
+    // Render + transmit visible blocks. Restart on any height correction because
+    // offsets shifted — blocks that were in range may now be out (or vice versa),
+    // and the safety net may have invalidated blocks we'd already passed.
+    loop {
+        let first = viewport.block_offsets
+            .partition_point(|&off| off < scroll_px)
+            .saturating_sub(1);
 
-    for i in first..blocks.len() {
-        if i >= viewport.block_offsets.len() { break; }
-        let block_top = viewport.block_offsets[i];
-        if block_top >= scroll_end { break; }
-        let block_bottom = block_top + viewport.block_heights[i];
-        if block_bottom <= scroll_px { continue; }
+        let mut corrected = false;
+        for i in first..blocks.len() {
+            if i >= viewport.block_offsets.len() { break; }
+            let block_top = viewport.block_offsets[i];
+            if block_top >= scroll_end { break; }
+            let block_bottom = block_top + viewport.block_heights[i];
+            if block_bottom <= scroll_px { continue; }
 
-        if !transmitted.contains(&i) {
-            let img = viewport.ensure_block_rendered(i, blocks, theme);
-            let rgba = img.as_rgba8().expect("image is rgba8");
-            transmit_block_image(term, i, rgba.as_raw(), img.width(), img.height(), cell_h)?;
-            transmitted.insert(i);
+            if !transmitted.contains(&i) {
+                let img = viewport.ensure_block_rendered(i, blocks, theme);
+                let rgba = img.as_rgba8().expect("image is rgba8");
+                transmit_block_image(term, i, rgba.as_raw(), img.width(), img.height(), cell_h)?;
+                transmitted.insert(i);
+
+                if let Some(corrected_idx) = viewport.height_corrected_at.take() {
+                    for j in (corrected_idx + 1)..blocks.len() {
+                        if transmitted.remove(&j) {
+                            for c in 0..20 { let _ = term.delete_image(block_image_id(j, c)); }
+                        }
+                    }
+                    corrected = true;
+                    break;
+                }
+            }
         }
+        if !corrected { break; }
     }
 
     // Clear content area
@@ -614,6 +678,43 @@ fn redraw(
 }
 
 /// Evict block caches and terminal images far from viewport.
+/// Find the next un-transmitted block in the prefetch window, prioritizing
+/// blocks below the viewport (next scroll-down direction).
+fn next_prefetch_block(
+    viewport: &Viewport,
+    transmitted: &HashSet<usize>,
+    scroll_px: u32,
+    viewport_px: u32,
+) -> Option<usize> {
+    let window_start = scroll_px.saturating_sub(viewport_px);
+    let window_end = scroll_px + viewport_px * 2;
+    let viewport_end = scroll_px + viewport_px;
+
+    // First: blocks intersecting [viewport_end, window_end) — i.e., the next viewport down
+    let first_below = viewport.block_offsets.partition_point(|&off| off < viewport_end)
+        .saturating_sub(1);
+    for i in first_below..viewport.block_offsets.len() {
+        let top = viewport.block_offsets[i];
+        if top >= window_end { break; }
+        let bottom = top + viewport.block_heights[i];
+        if bottom <= viewport_end { continue; }
+        if !transmitted.contains(&i) { return Some(i); }
+    }
+
+    // Then: blocks intersecting [window_start, scroll_px) — the viewport above
+    let first_above = viewport.block_offsets.partition_point(|&off| off < window_start)
+        .saturating_sub(1);
+    for i in first_above..viewport.block_offsets.len() {
+        let top = viewport.block_offsets[i];
+        if top >= scroll_px { break; }
+        let bottom = top + viewport.block_heights[i];
+        if bottom <= window_start { continue; }
+        if !transmitted.contains(&i) { return Some(i); }
+    }
+
+    None
+}
+
 fn evict_distant(
     term: &mut Terminal,
     viewport: &mut Viewport,
@@ -772,15 +873,22 @@ fn incremental_scroll(
     let new_scroll_px = new_scroll * ch;
     let vp_px = content_rows as u32 * ch;
 
-    // Only check for new blocks to transmit — just for the newly exposed rows
-    if delta > 0 {
+    // Only check for new blocks to transmit — just for the newly exposed rows.
+    // If a height correction happens here, offsets shifted underneath us and the
+    // safety net invalidated visible blocks elsewhere; the cheap scroll-region
+    // approach can't repair the screen, so fall back to a full redraw.
+    let corrected = if delta > 0 {
         let exposed_start = new_scroll_px + vp_px - abs_delta as u32 * ch;
         let exposed_end = new_scroll_px + vp_px;
-        ensure_blocks_for_range(term, viewport, blocks, theme, transmitted, exposed_start, exposed_end, cell_h)?;
+        ensure_blocks_for_range(term, viewport, blocks, theme, transmitted, exposed_start, exposed_end, cell_h)?
     } else {
         let exposed_start = new_scroll_px;
         let exposed_end = new_scroll_px + abs_delta as u32 * ch;
-        ensure_blocks_for_range(term, viewport, blocks, theme, transmitted, exposed_start, exposed_end, cell_h)?;
+        ensure_blocks_for_range(term, viewport, blocks, theme, transmitted, exposed_start, exposed_end, cell_h)?
+    };
+    if corrected {
+        write!(term.stdout_mut(), "\x1b[r")?; // reset scroll region before redraw
+        return redraw(term, viewport, blocks, theme, transmitted, new_scroll, cell_h, margin_cols);
     }
 
     if delta > 0 {
@@ -809,6 +917,10 @@ fn incremental_scroll(
 
 /// Ensure blocks overlapping a specific pixel range are rendered and transmitted.
 /// Used for incremental scroll — only checks the newly exposed rows.
+/// Returns true if any block render triggered a height correction (offsets
+/// shifted). When true, the caller must do a full redraw rather than rely on
+/// incremental painting, because blocks elsewhere in the viewport were
+/// invalidated by the safety net.
 fn ensure_blocks_for_range(
     term: &mut Terminal,
     viewport: &mut Viewport,
@@ -818,7 +930,8 @@ fn ensure_blocks_for_range(
     range_start: u32,
     range_end: u32,
     cell_h: u16,
-) -> Result<()> {
+) -> Result<bool> {
+    let mut corrected = false;
     let first = viewport.block_offsets
         .partition_point(|&off| off < range_start)
         .saturating_sub(1);
@@ -836,17 +949,17 @@ fn ensure_blocks_for_range(
             transmit_block_image(term, i, rgba.as_raw(), img.width(), img.height(), cell_h)?;
             transmitted.insert(i);
 
-            // Safety net: if height correction occurred, invalidate blocks below
             if let Some(corrected_idx) = viewport.height_corrected_at.take() {
                 for j in (corrected_idx + 1)..blocks.len() {
                     if transmitted.remove(&j) {
                         for c in 0..20 { let _ = term.delete_image(block_image_id(j, c)); }
                     }
                 }
+                corrected = true;
             }
         }
     }
-    Ok(())
+    Ok(corrected)
 }
 
 /// Print a single placeholder row at the cursor position (binary search).
