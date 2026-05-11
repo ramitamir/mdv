@@ -208,16 +208,6 @@ impl Viewport {
     }
 
 
-    pub fn render_status_bar(
-        &mut self,
-        left_panes: &[graphics::StatusPane],
-        right_panes: &[graphics::StatusPane],
-        fill_bg: [u8; 3],
-        height_px: u32,
-    ) -> image::DynamicImage {
-        self.renderer.render_status_bar(left_panes, right_panes, fill_bg, self.width_px, height_px, self.font_size)
-    }
-
     pub fn resize(&mut self, blocks: &[Block], new_width_px: u32) {
         self.width_px = new_width_px;
         // Re-measure all blocks at new width

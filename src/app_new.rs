@@ -172,11 +172,11 @@ pub fn run(mut blocks: Vec<Block>, raw_content: &str, filename: &str, theme: The
                     }
                     KeyCode::Backspace => {
                         search_input.pop();
-                        draw_search_bar(&mut term, &mut viewport, &search_input, &theme)?;
+                        draw_search_bar(&mut term, &search_input, &theme)?;
                     }
                     KeyCode::Char(c) => {
                         search_input.push(c);
-                        draw_search_bar(&mut term, &mut viewport, &search_input, &theme)?;
+                        draw_search_bar(&mut term, &search_input, &theme)?;
                     }
                     _ => {}
                 }
@@ -189,7 +189,7 @@ pub fn run(mut blocks: Vec<Block>, raw_content: &str, filename: &str, theme: The
             if key.code == KeyCode::Char('r') || key.code == KeyCode::Char('v') {
                 let selecting = key.code == KeyCode::Char('v');
                 let start_line = scroll_to_source_line(scroll_row, cell_h, &viewport, &blocks, &raw_content);
-                source_mode(&mut term, &mut viewport, &raw_content, filename, &theme, start_line, selecting)?;
+                source_mode(&mut term, &raw_content, filename, &theme, start_line, selecting)?;
                 // Return to rendered view
                 set_term_bg(&mut term, &theme)?;
                 term.delete_all_images()?;
@@ -250,12 +250,12 @@ pub fn run(mut blocks: Vec<Block>, raw_content: &str, filename: &str, theme: The
                 if let Some(err_msg) = editor_err {
                     let err_bg: [u8; 3] = [140, 30, 30];
                     let err_fg: [u8; 3] = [255, 200, 200];
-                    draw_status_image(&mut term, &mut viewport,
+                    draw_status_panes(&mut term,
                         &[
                             StatusPane { text: format!("{:^8}", "ERROR"), bg: err_bg, fg: [255, 255, 255], bold: true, fill: false },
                             StatusPane { text: err_msg, bg: err_bg, fg: err_fg, bold: false, fill: true },
                         ],
-                        &[], err_bg,
+                        &[], err_bg, crate::theme::color_to_rgb(theme.background),
                     )?;
                 } else {
                     draw_status(&mut term, &mut viewport, filename, scroll_row, &theme, hover_url.as_deref())?;
@@ -264,7 +264,7 @@ pub fn run(mut blocks: Vec<Block>, raw_content: &str, filename: &str, theme: The
             } else if keys.normal.search.matches(key) {
                 mode = Mode::Search;
                 search_input.clear();
-                draw_search_bar(&mut term, &mut viewport, &search_input, &theme)?;
+                draw_search_bar(&mut term, &search_input, &theme)?;
                 continue;
             } else if keys.normal.next_match.matches(key) && !matches.is_empty() {
                 navigate_match(
@@ -372,9 +372,9 @@ pub fn run(mut blocks: Vec<Block>, raw_content: &str, filename: &str, theme: The
         if let Some(msg) = &status_msg {
             let mode_bg = crate::theme::color_to_rgb(theme.status_bar_view);
             let fill = crate::theme::color_to_rgb(theme.status_info_bg);
-            draw_status_image(&mut term, &mut viewport,
+            draw_status_panes(&mut term,
                 &[pane_mode("NORMAL", &theme, mode_bg), pane_info(msg, &theme)],
-                &[], fill,
+                &[], fill, crate::theme::color_to_rgb(theme.background),
             )?;
         }
 
@@ -933,8 +933,6 @@ fn navigate_match(
 
 use crate::graphics::StatusPane;
 
-const STATUS_IMAGE_ID: u32 = 999999;
-
 fn pane_mode(text: &str, theme: &Theme, mode_bg: [u8; 3]) -> StatusPane {
     StatusPane { text: format!("{:^8}", text), bg: mode_bg, fg: crate::theme::color_to_rgb(theme.status_bar_fg), bold: true, fill: false }
 }
@@ -951,68 +949,79 @@ fn pane_keys(text: &str, theme: &Theme) -> StatusPane {
     StatusPane { text: format!("{:^26}", text), bg: crate::theme::color_to_rgb(theme.status_keys_bg), fg: crate::theme::color_to_rgb(theme.status_dim_fg), bold: false, fill: false }
 }
 
-fn draw_status_image(
+fn draw_status_panes(
     term: &mut Terminal,
-    viewport: &mut Viewport,
     left: &[StatusPane],
     right: &[StatusPane],
     fill_bg: [u8; 3],
+    restore_bg: [u8; 3],
 ) -> Result<()> {
-    let height = (term.cell_height as f32 * 1.4) as u32; // taller than one cell
-    let width = term.cols as u32 * term.cell_width as u32;
-    let fp = status_fingerprint(left, right, fill_bg, width, height);
+    let cols = term.cols as usize;
+    let status_row = term.content_rows();
 
-    if let Some((cached_fp, cached_rows)) = term.status_cache() {
-        if cached_fp == fp {
-            // Inputs unchanged — just re-emit the placeholder rows referencing
-            // the already-transmitted image. Skips cosmic-text layout, pixel
-            // compositing, PNG encoding, and Kitty transmission.
-            let status_row = term.content_rows();
-            let cols = term.cols;
-            crossterm::queue!(term.stdout_mut(), crossterm::cursor::MoveTo(0, status_row))?;
-            term.print_placeholder_row(STATUS_IMAGE_ID, 0, cols)?;
-            if cached_rows > 1 && status_row + 1 < term.rows {
-                crossterm::queue!(term.stdout_mut(), crossterm::cursor::MoveTo(0, status_row + 1))?;
-                term.print_placeholder_row(STATUS_IMAGE_ID, 1, cols)?;
-            }
-            term.flush()?;
-            return Ok(());
+    let pane_width = |p: &StatusPane| p.text.chars().count() + 2; // 1 space pad each side
+    let fixed_left: usize = left.iter().filter(|p| !p.fill).map(pane_width).sum();
+    let fixed_right: usize = right.iter().filter(|p| !p.fill).map(pane_width).sum();
+    let fill_width = cols.saturating_sub(fixed_left + fixed_right);
+    let has_any_fill = left.iter().any(|p| p.fill) || right.iter().any(|p| p.fill);
+
+    crossterm::queue!(term.stdout_mut(), crossterm::cursor::MoveTo(0, status_row))?;
+
+    for p in left {
+        emit_pane(term, p, fill_width)?;
+    }
+    if !has_any_fill {
+        let stdout = term.stdout_mut();
+        write!(stdout, "\x1b[48;2;{};{};{}m", fill_bg[0], fill_bg[1], fill_bg[2])?;
+        for _ in 0..fill_width {
+            stdout.write_all(b" ")?;
         }
     }
-
-    let img = viewport.render_status_bar(left, right, fill_bg, height);
-    let rgba = img.as_rgba8().expect("image is rgba8");
-    // Delete previous status bar image
-    let _ = term.delete_image(STATUS_IMAGE_ID);
-    term.transmit_virtual(STATUS_IMAGE_ID, rgba.as_raw(), img.width(), img.height())?;
-    // Place across status bar row(s)
-    let status_row = term.content_rows();
-    let cols = term.cols.saturating_sub(0);
-    crossterm::queue!(term.stdout_mut(), crossterm::cursor::MoveTo(0, status_row))?;
-    term.print_placeholder_row(STATUS_IMAGE_ID, 0, cols)?;
-    // If image spans 2 rows
-    let img_rows = (height + term.cell_height as u32 - 1) / term.cell_height as u32;
-    if img_rows > 1 && status_row + 1 < term.rows {
-        crossterm::queue!(term.stdout_mut(), crossterm::cursor::MoveTo(0, status_row + 1))?;
-        term.print_placeholder_row(STATUS_IMAGE_ID, 1, cols)?;
+    for p in right {
+        emit_pane(term, p, fill_width)?;
     }
+
+    // Restore the terminal bg to theme background so subsequent `\x1b[2K`
+    // line-clears (in redraw / clear_content) paint theme bg, not default black.
+    write!(
+        term.stdout_mut(),
+        "\x1b[39m\x1b[22m\x1b[48;2;{};{};{}m",
+        restore_bg[0], restore_bg[1], restore_bg[2]
+    )?;
     term.flush()?;
-    term.set_status_cache(fp, img_rows);
     Ok(())
 }
 
-fn status_fingerprint(left: &[StatusPane], right: &[StatusPane], fill_bg: [u8; 3], width: u32, height: u32) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    left.len().hash(&mut h);
-    for p in left { p.hash(&mut h); }
-    right.len().hash(&mut h);
-    for p in right { p.hash(&mut h); }
-    fill_bg.hash(&mut h);
-    width.hash(&mut h);
-    height.hash(&mut h);
-    h.finish()
+fn emit_pane(term: &mut Terminal, p: &StatusPane, fill_width: usize) -> Result<()> {
+    let stdout = term.stdout_mut();
+    write!(
+        stdout,
+        "\x1b[38;2;{};{};{}m\x1b[48;2;{};{};{}m",
+        p.fg[0], p.fg[1], p.fg[2], p.bg[0], p.bg[1], p.bg[2]
+    )?;
+    if p.bold {
+        write!(stdout, "\x1b[1m")?;
+    }
+    if p.fill {
+        // Fill panes get padded/truncated to fill_width chars (no extra padding)
+        let n = p.text.chars().count();
+        if n >= fill_width {
+            let truncated: String = p.text.chars().take(fill_width).collect();
+            write!(stdout, "{}", truncated)?;
+        } else {
+            write!(stdout, "{}", p.text)?;
+            for _ in 0..(fill_width - n) {
+                stdout.write_all(b" ")?;
+            }
+        }
+    } else {
+        // Fixed panes get 1 space padding on each side for breathing room
+        write!(stdout, " {} ", p.text)?;
+    }
+    if p.bold {
+        write!(stdout, "\x1b[22m")?;
+    }
+    Ok(())
 }
 
 /// Map the rendered viewport scroll position to a source line number.
@@ -1075,25 +1084,24 @@ fn draw_status(
     let fill = crate::theme::color_to_rgb(theme.status_info_bg);
     let pct = scroll_pct(scroll_row, viewport, term);
     let display = message.unwrap_or(filename);
-    draw_status_image(term, viewport,
+    draw_status_panes(term,
         &[pane_mode("NORMAL", theme, mode_bg), pane_file(display, theme)],
         &[pane_keys("?=help", theme), pane_progress(&pct, mode_bg)],
-        fill,
+        fill, crate::theme::color_to_rgb(theme.background),
     )
 }
 
 fn draw_search_bar(
     term: &mut Terminal,
-    viewport: &mut Viewport,
     input: &str,
     theme: &Theme,
 ) -> Result<()> {
     let mode_bg = crate::theme::color_to_rgb(theme.status_bar_select);
     let fill = crate::theme::color_to_rgb(theme.status_info_bg);
-    draw_status_image(term, viewport,
+    draw_status_panes(term,
         &[pane_mode("SEARCH", theme, mode_bg), pane_file(input, theme)],
         &[pane_keys("enter=search esc=cancel", theme)],
-        fill,
+        fill, crate::theme::color_to_rgb(theme.background),
     )
 }
 
@@ -1118,10 +1126,10 @@ fn draw_status_search(
     } else {
         pct
     };
-    draw_status_image(term, viewport,
+    draw_status_panes(term,
         &[pane_mode("SEARCH", theme, mode_bg), pane_file(query, theme)],
         &[pane_keys("n/N=next/prev esc=cancel", theme), pane_info(&match_info, theme), pane_progress(&pos, mode_bg)],
-        fill,
+        fill, crate::theme::color_to_rgb(theme.background),
     )
 }
 
@@ -1258,7 +1266,6 @@ fn show_help(term: &mut Terminal, theme: &Theme) -> Result<()> {
 
 fn source_mode(
     term: &mut Terminal,
-    viewport: &mut Viewport,
     content: &str,
     filename: &str,
     theme: &Theme,
@@ -1355,10 +1362,10 @@ fn source_mode(
             } else {
                 filename.to_string()
             };
-            draw_status_image(term, viewport,
+            draw_status_panes(term,
                 &[pane_mode("SELECT", theme, sel_bg), pane_file(&file_text, theme)],
                 &[pane_keys("y=copy esc=cancel", theme), pane_progress(&line_info, sel_bg)],
-                fill_bg,
+                fill_bg, crate::theme::color_to_rgb(theme.background),
             )?;
         } else {
             let fill_bg = crate::theme::color_to_rgb(theme.status_info_bg);
@@ -1367,10 +1374,10 @@ fn source_mode(
             } else {
                 filename.to_string()
             };
-            draw_status_image(term, viewport,
+            draw_status_panes(term,
                 &[pane_mode("SOURCE", theme, src_bg), pane_file(&file_text, theme)],
                 &[pane_keys("v=select esc=back", theme), pane_progress(&line_info, src_bg)],
-                fill_bg,
+                fill_bg, crate::theme::color_to_rgb(theme.background),
             )?;
         }
         copied_msg = None;

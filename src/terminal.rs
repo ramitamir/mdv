@@ -13,9 +13,6 @@ pub struct Terminal {
     pub rows: u16,
     pub cell_width: u16,
     pub cell_height: u16,
-    /// Fingerprint of the last status bar image transmitted, plus its row span.
-    /// `None` means cache is empty/invalid and the next draw must re-transmit.
-    status_cache: Option<(u64, u32)>,
 }
 
 /// Max image rows before needing to split into chunks (limited by diacritic count).
@@ -58,13 +55,7 @@ impl Terminal {
             rows,
             cell_width,
             cell_height,
-            status_cache: None,
         })
-    }
-
-    pub fn status_cache(&self) -> Option<(u64, u32)> { self.status_cache }
-    pub fn set_status_cache(&mut self, key: u64, img_rows: u32) {
-        self.status_cache = Some((key, img_rows));
     }
 
     pub fn stdout_mut(&mut self) -> &mut io::BufWriter<io::Stdout> {
@@ -80,7 +71,7 @@ impl Terminal {
     }
 
     pub fn content_rows(&self) -> u16 {
-        self.rows.saturating_sub(2) // 2 rows for pixel-rendered status bar
+        self.rows.saturating_sub(1) // 1 row reserved for ANSI-text status bar
     }
 
     /// Transmit an image with virtual placement (U=1).
@@ -147,7 +138,6 @@ impl Terminal {
     pub fn delete_all_images(&mut self) -> Result<()> {
         write!(self.stdout, "\x1b_Ga=d;\x1b\\")?;
         self.stdout.flush()?;
-        self.status_cache = None;
         Ok(())
     }
 
@@ -191,7 +181,6 @@ impl Terminal {
         let (cw, ch) = detect_cell_size();
         self.cell_width = cw;
         self.cell_height = ch;
-        self.status_cache = None;
     }
 
     pub fn cleanup(&mut self) -> Result<()> {
